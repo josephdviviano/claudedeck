@@ -12,27 +12,32 @@ If we structure your proof bundles to emit C2PA-compatible manifests, your verif
 
 ## Project Overview
 
-**claudedeck** — Cryptographic provenance for AI coding sessions. Creates hash chains over prompt/response turns, binds artifacts to specific moments, and anchors chains to external timestamp services (Sigstore + OpenTimestamps) for independent verifiability.
+**claudedeck** — Cryptographic provenance for AI coding sessions. Creates hash chains over prompt/response turns, binds artifacts to specific moments, and anchors chains to external timestamp services (local HMAC, Sigstore, OpenTimestamps) for independent verifiability.
 
 ## Commands
 
 ```bash
-# Install dependencies
-pip install cryptography pytest
+# Install in development mode
+pip install -e ".[dev]"
 
 # Enable verification for a project (installs Claude Code Stop hook)
-python -m claudedeck on
+claudedeck on
 
-# Check status, verify chains, inspect records
-python -m claudedeck status
-python -m claudedeck verify [SESSION_ID]
-python -m claudedeck inspect [SESSION_ID]
+# Check status, verify chains, inspect records, show conversations
+claudedeck status
+claudedeck verify [SESSION_ID]
+claudedeck inspect [SESSION_ID]
+claudedeck show [SESSION_ID]
+
+# Anchor chain head (local, sigstore, ots, or all)
+claudedeck anchor [SESSION_ID] [--backend local|sigstore|ots|all]
+claudedeck anchor-verify [SESSION_ID] [--backend local|sigstore|ots]
 
 # Generate a proof bundle (selective disclosure)
-python -m claudedeck proof [SESSION_ID] [--seqs 0,1,3]
+claudedeck proof [SESSION_ID] [--seqs 0,1,3] [--no-anchors]
 
 # Disable verification
-python -m claudedeck off
+claudedeck off
 
 # Run end-to-end demo
 python demo.py
@@ -40,7 +45,7 @@ python demo.py
 # Verify a proof bundle (zero dependencies)
 python verify_proof.py <bundle.json> [--verbose] [--check-artifact <file>]
 
-# Run test suite
+# Run test suite (185 tests)
 python -m pytest tests/ -v
 ```
 
@@ -48,27 +53,30 @@ python -m pytest tests/ -v
 
 The `claudedeck/` package contains:
 
-- **`__main__.py`** — CLI with subcommands: `on`, `off`, `status`, `verify`, `inspect`, `proof`, `session`.
+- **`__main__.py`** — CLI with subcommands: `on`, `off`, `status`, `verify`, `inspect`, `show`, `proof`, `anchor`, `anchor-verify`, `session`.
 - **`hook.py`** — Claude Code `Stop` hook. Reads session JSONL transcripts, extracts turns, appends to hash chain. Runs silently after each assistant response.
 - **`settings.py`** — Project settings management. Installs/removes the hook in `.claude/settings.local.json`.
 - **`core.py`** — Hash chain data model (`Chain`, `ChainRecord`, `TurnData`, `ArtifactRef`). Append-only chain with JSONL persistence. Zero external dependencies (stdlib only). All hashing uses `canonical_json()` for deterministic serialization.
 - **`vault.py`** — Encrypted storage for session plaintext (Fernet + PBKDF2). Requires `cryptography` package. Entries keyed by chain sequence number.
-- **`proof.py`** — Proof bundle creation and verification (`ProofBundle`, `create_proof_bundle`, `verify_proof_bundle`). Supports selective disclosure — researcher chooses which turns to reveal.
-- **`signing.py`** — "Signing airlock" that structurally ensures only 64-char SHA-256 hex digests reach external services (Sigstore cosign, OpenTimestamps). Security-critical module.
-- **`verify_proof.py`** — Standalone verifier script (root level). Intentionally duplicates core hash logic so it has zero dependencies and can be distributed independently.
+- **`proof.py`** — Proof bundle creation and verification (`ProofBundle`, `create_proof_bundle`, `verify_proof_bundle`). Supports selective disclosure — researcher chooses which turns to reveal. `AnchorRef` supports embedded proof data (base64) for portable OTS proofs.
+- **`signing.py`** — "Signing airlock" that structurally ensures only 64-char SHA-256 hex digests reach external services. Contains `sign_with_sigstore`, `stamp_with_ots`, `verify_with_sigstore`, `verify_with_ots`, and `anchor_chain_head`. Security-critical module.
+- **`anchoring.py`** — Unified anchor orchestrator. Dispatches to local, Sigstore, or OpenTimestamps backends via `anchor()` and `anchor_all()`. Writes all results to a single `anchor_log.jsonl` with a uniform schema. Handles verification dispatch via `verify_anchor()`.
+- **`local_anchor.py`** — Local signing backend for dev/testing. HMAC-SHA256 with an auto-generated key (`.claudedeck/local_anchor.key`, mode 0o600). Append-only anchor log. Not a substitute for Sigstore/OTS in production.
+- **`verify_proof.py`** — Standalone verifier script (root level). Intentionally duplicates core hash logic so it has zero dependencies and can be distributed independently. Prints backend-specific verification instructions.
 - **`demo.py`** — Simulates a full session: record turns, encrypt vault, create proof bundle, verify, and demonstrate tamper detection.
 
 ### Key design constraints
 
 - **Verification path must be stdlib-only** — `core.py`, `proof.py`, and `verify_proof.py` must never depend on third-party packages so anyone can verify without trusting external code.
-- **The signing airlock** (`signing.py:validate_hash_only`) is the single point where data exits the machine. Only fixed-length hex hashes pass through — never plaintext or metadata.
+- **The signing airlock** (`signing.py:validate_hash_only`) is the single point where data exits the machine. Only fixed-length hex hashes pass through — never plaintext or metadata. Uses `\A[0-9a-f]{64}\Z` regex (not `^...$` which allows trailing newline in Python).
 - **`canonical_json()`** (sorted keys, no whitespace, `ensure_ascii=True`) is the canonical serialization for all hashing. Any change to this function breaks all existing chains.
 - **`verify_proof.py` deliberately duplicates** `sha256_hex` and `canonical_json` from `core.py` to remain standalone.
+- **Graceful degradation** — missing `cosign` or `ots` CLIs produce informative errors, never crashes. Local anchoring always works.
+- **Backward compatibility** — old anchor log entries without `anchor_type` are treated as `"local"`.
 
 ### Data flow
 
-Chain file (`.chain.jsonl`) contains only hashes — safe to publish. Vault (`.vault`) contains encrypted plaintext — stays private. Proof bundles contain the full chain plus selectively disclosed plaintext for chosen turns.
+Chain file (`.chain.jsonl`) contains only hashes — safe to publish. Vault (`.vault.json`) contains plaintext — stays private. Proof bundles contain the full chain plus selectively disclosed plaintext for chosen turns. Anchors from the anchor log are auto-included in proof bundles.
 
 ### Development Env
 use my `claudedeck` conda environment during development.
-

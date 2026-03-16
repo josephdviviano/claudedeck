@@ -181,6 +181,14 @@ claudedeck runs as a **Claude Code Stop hook** — it fires silently after each 
 | OpenTimestamps | `--backend ots` | `ots` CLI | Bitcoin-attested timestamp |
 | All | `--backend all` | Optional | Best available attestation |
 
+## Roadmap
+
+- [ ] C2PA-compatible manifest output (interop with Adobe/Google/Microsoft content provenance ecosystem)
+- [ ] Merkle tree for efficient partial verification of long sessions
+- [ ] Integration with Anthropic's API response headers (api_request_id correlation)
+- [ ] Server-side response co-signing (pending Anthropic support)
+- [ ] Encrypted vault with passphrase-based key derivation
+
 ## Development
 
 ```bash
