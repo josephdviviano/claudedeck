@@ -400,3 +400,45 @@ class TestProofBundleAnchors:
         assert result.is_valid is True
         anchor_checks = [c for c in result.checks if c["check"].startswith("anchor_") and c["check"] != "anchor_note"]
         assert len(anchor_checks) == 3
+
+
+# ---------------------------------------------------------------------------
+# Key consistency in verification
+# ---------------------------------------------------------------------------
+
+class TestKeyConsistencyInVerification:
+    def test_local_verify_surfaces_key_rotation_warning(self, tmp_path):
+        """After key rotation, local verify should include a warning in detail."""
+        import secrets
+        from claudedeck.local_anchor import _key_path
+
+        deck = tmp_path / ".claudedeck"
+        deck.mkdir()
+
+        # Anchor with original key
+        anchor(VALID_HASH, "local", deck)
+
+        # Replace the key (simulating rotation)
+        _key_path(deck).write_bytes(secrets.token_bytes(32))
+
+        # Re-anchor with new key so signature verification passes
+        anchor(VALID_HASH, "local", deck)
+        entries = read_log_entries(deck)
+
+        # The second entry was signed with the new key, so it verifies
+        # but check_key_consistency should detect the old entry
+        ok, detail = verify_anchor(entries[-1], deck)
+        assert ok is True
+        assert "WARNING" in detail
+        assert "rotation" in detail.lower()
+
+    def test_local_verify_no_warning_with_consistent_key(self, tmp_path):
+        deck = tmp_path / ".claudedeck"
+        deck.mkdir()
+
+        anchor(VALID_HASH, "local", deck)
+        entries = read_log_entries(deck)
+
+        ok, detail = verify_anchor(entries[0], deck)
+        assert ok is True
+        assert "WARNING" not in detail

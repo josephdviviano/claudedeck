@@ -21,9 +21,35 @@ from pathlib import Path
 from typing import Optional
 
 from .core import (
-    Chain, ChainRecord, ArtifactRef,
+    Chain, ChainRecord, ArtifactRef, ToolInteraction,
     sha256_hex, canonical_json, GENESIS_HASH,
 )
+
+
+@dataclass
+class DisclosedToolInteraction:
+    """Plaintext tool input/result disclosed in a proof bundle."""
+    tool_name: str
+    tool_use_id: str
+    input: dict       # raw input parameters
+    result: str       # raw result content
+
+    def to_dict(self) -> dict:
+        return {
+            "tool_name": self.tool_name,
+            "tool_use_id": self.tool_use_id,
+            "input": self.input,
+            "result": self.result,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DisclosedToolInteraction":
+        return cls(
+            tool_name=d["tool_name"],
+            tool_use_id=d["tool_use_id"],
+            input=d.get("input", {}),
+            result=d.get("result", ""),
+        )
 
 
 @dataclass
@@ -33,14 +59,18 @@ class DisclosedTurn:
     prompt: str
     response: str
     artifacts: dict[str, str]  # filename -> content (text) or hash (binary)
+    tool_interactions: list[DisclosedToolInteraction] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "seq": self.seq,
             "prompt": self.prompt,
             "response": self.response,
             "artifacts": self.artifacts,
         }
+        if self.tool_interactions:
+            d["tool_interactions"] = [ti.to_dict() for ti in self.tool_interactions]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "DisclosedTurn":
@@ -49,6 +79,10 @@ class DisclosedTurn:
             prompt=d["prompt"],
             response=d["response"],
             artifacts=d.get("artifacts", {}),
+            tool_interactions=[
+                DisclosedToolInteraction.from_dict(ti)
+                for ti in d.get("tool_interactions", [])
+            ],
         )
 
 
@@ -144,11 +178,16 @@ def create_proof_bundle(
         entry = vault.retrieve(seq)
         if entry is None:
             raise ValueError(f"Sequence {seq} not found in vault")
+        tool_interactions = [
+            DisclosedToolInteraction.from_dict(ti)
+            for ti in entry.get("tool_interactions", [])
+        ]
         disclosed.append(DisclosedTurn(
             seq=seq,
             prompt=entry["prompt"],
             response=entry["response"],
             artifacts=entry.get("artifacts", {}),
+            tool_interactions=tool_interactions,
         ))
 
     return ProofBundle(
@@ -169,16 +208,44 @@ class VerificationResult:
     is_valid: bool
     checks: list[dict]  # {"check": str, "passed": bool, "detail": str}
 
+    @property
+    def trust_level(self) -> str:
+        """Classify the trust level based on anchor presence.
+
+        Returns:
+            "anchored" — at least one external anchor (sigstore/ots)
+            "local_only" — only local anchors (no third-party attestation)
+            "unanchored" — no anchors at all (trivially forgeable)
+        """
+        anchor_checks = [
+            c for c in self.checks
+            if c["check"].startswith("anchor_") and c["check"] not in ("anchor_note", "anchors")
+        ]
+        if not anchor_checks:
+            return "unanchored"
+        anchor_types = set()
+        for c in anchor_checks:
+            # check name is "anchor_{type}"
+            atype = c["check"].split("_", 1)[1]
+            anchor_types.add(atype)
+        if anchor_types - {"local"}:
+            return "anchored"
+        return "local_only"
+
     def summary(self) -> str:
         lines = []
         for c in self.checks:
             icon = "PASS" if c["passed"] else "FAIL"
             lines.append(f"  [{icon}] {c['check']}: {c['detail']}")
         status = "VALID" if self.is_valid else "INVALID"
-        return f"Proof bundle verification: {status}\n" + "\n".join(lines)
+        trust = self.trust_level.upper()
+        return f"Proof bundle verification: {status} [{trust}]\n" + "\n".join(lines)
 
 
-def verify_proof_bundle(bundle: ProofBundle) -> VerificationResult:
+def verify_proof_bundle(
+    bundle: ProofBundle,
+    require_anchor: bool = False,
+) -> VerificationResult:
     """Verify a proof bundle's integrity.
 
     Checks performed:
@@ -187,6 +254,11 @@ def verify_proof_bundle(bundle: ProofBundle) -> VerificationResult:
     3. Artifact hashes match chain records
     4. Anchor references are present (actual anchor verification
        requires external tools — Sigstore/OTS CLI)
+
+    Args:
+        bundle: The proof bundle to verify.
+        require_anchor: If True, verification fails when no external
+            anchors are present. Default False for backward compatibility.
     """
     checks = []
 
@@ -253,6 +325,49 @@ def verify_proof_bundle(bundle: ProofBundle) -> VerificationResult:
             "detail": "Response matches chain" if response_ok else "RESPONSE HASH MISMATCH",
         })
 
+    # --- Check 2b: Tool interaction verification ---
+    for turn in bundle.disclosed_turns:
+        rec = record_by_seq.get(turn.seq)
+        if rec is None or not turn.tool_interactions:
+            continue
+        chain_interactions = {
+            ti.tool_use_id: ti
+            for ti in rec.turn.tool_interactions
+        }
+        for dti in turn.tool_interactions:
+            chain_ti = chain_interactions.get(dti.tool_use_id)
+            if chain_ti is None:
+                checks.append({
+                    "check": f"tool_input_seq_{turn.seq}_{dti.tool_use_id}",
+                    "passed": False,
+                    "detail": f"Tool interaction '{dti.tool_use_id}' not in chain record",
+                })
+                continue
+            # Verify input hash
+            input_hash = sha256_hex(canonical_json(dti.input))
+            input_ok = input_hash == chain_ti.input_hash
+            checks.append({
+                "check": f"tool_input_seq_{turn.seq}_{dti.tool_use_id}",
+                "passed": input_ok,
+                "detail": (
+                    f"Tool input for {dti.tool_name} matches chain"
+                    if input_ok else
+                    f"TOOL INPUT HASH MISMATCH for {dti.tool_name}"
+                ),
+            })
+            # Verify result hash
+            result_hash = sha256_hex(dti.result.encode("utf-8"))
+            result_ok = result_hash == chain_ti.result_hash
+            checks.append({
+                "check": f"tool_result_seq_{turn.seq}_{dti.tool_use_id}",
+                "passed": result_ok,
+                "detail": (
+                    f"Tool result for {dti.tool_name} matches chain"
+                    if result_ok else
+                    f"TOOL RESULT HASH MISMATCH for {dti.tool_name}"
+                ),
+            })
+
     # --- Check 3: Artifact verification ---
     for turn in bundle.disclosed_turns:
         rec = record_by_seq.get(turn.seq)
@@ -296,11 +411,21 @@ def verify_proof_bundle(bundle: ProofBundle) -> VerificationResult:
             "detail": "External anchor verification requires Sigstore/OTS CLI tools",
         })
     else:
-        checks.append({
-            "check": "anchors",
-            "passed": True,
-            "detail": "No external anchors present (chain is self-consistent but unanchored)",
-        })
+        if require_anchor:
+            checks.append({
+                "check": "anchors",
+                "passed": False,
+                "detail": "WARNING: No external anchors — bundle is trivially forgeable. "
+                          "Anyone can fabricate a valid-looking chain without anchors.",
+            })
+        else:
+            checks.append({
+                "check": "anchors",
+                "passed": True,
+                "detail": "WARNING: UNANCHORED — no external anchors present. "
+                          "Chain is self-consistent but could have been fabricated. "
+                          "Use 'claudedeck anchor' to add external timestamp proof.",
+            })
 
     is_valid = all(c["passed"] for c in checks)
     return VerificationResult(is_valid=is_valid, checks=checks)

@@ -193,12 +193,60 @@ class ArtifactRef:
 
 
 @dataclass
+class ToolInteraction:
+    """A single tool invocation with hashed input and result.
+
+    Captures what the AI asked a tool to do (input) and what the tool
+    returned (result), so verifiers can reconstruct the full information
+    flow that informed the AI's decisions.
+    """
+    tool_name: str
+    tool_use_id: str
+    input_hash: str    # SHA-256 of canonical_json(input_params)
+    result_hash: str   # SHA-256 of result content string
+
+    def to_dict(self) -> dict:
+        return {
+            "tool_name": self.tool_name,
+            "tool_use_id": self.tool_use_id,
+            "input_hash": self.input_hash,
+            "result_hash": self.result_hash,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ToolInteraction":
+        return cls(
+            tool_name=d["tool_name"],
+            tool_use_id=d["tool_use_id"],
+            input_hash=d["input_hash"],
+            result_hash=d["result_hash"],
+        )
+
+    @classmethod
+    def from_plaintext(
+        cls,
+        tool_name: str,
+        tool_use_id: str,
+        input_params: dict,
+        result_content: str,
+    ) -> "ToolInteraction":
+        """Create ToolInteraction by hashing plaintext input/result."""
+        return cls(
+            tool_name=tool_name,
+            tool_use_id=tool_use_id,
+            input_hash=sha256_hex(canonical_json(input_params)),
+            result_hash=sha256_hex(result_content.encode("utf-8")),
+        )
+
+
+@dataclass
 class TurnData:
     """Hashed representation of a single prompt/response turn."""
     prompt_hash: str
     response_hash: str
     artifacts: list[ArtifactRef] = field(default_factory=list)
     tool_calls: list[str] = field(default_factory=list)
+    tool_interactions: list[ToolInteraction] = field(default_factory=list)
     model: Optional[str] = None
     api_request_id: Optional[str] = None
     token_count: Optional[int] = None
@@ -214,6 +262,8 @@ class TurnData:
         }
         if self.tool_calls:
             d["tool_calls"] = self.tool_calls
+        if self.tool_interactions:
+            d["tool_interactions"] = [ti.to_dict() for ti in self.tool_interactions]
         return d
 
     @classmethod
@@ -223,6 +273,10 @@ class TurnData:
             response_hash=d["response_hash"],
             artifacts=[ArtifactRef.from_dict(a) for a in d.get("artifacts", [])],
             tool_calls=d.get("tool_calls", []),
+            tool_interactions=[
+                ToolInteraction.from_dict(ti)
+                for ti in d.get("tool_interactions", [])
+            ],
             model=d.get("model"),
             api_request_id=d.get("api_request_id"),
             token_count=d.get("token_count"),
@@ -236,6 +290,7 @@ class TurnData:
         artifact_paths: list[str | Path] | None = None,
         artifacts: list["ArtifactRef"] | None = None,
         tool_calls: list[str] | None = None,
+        tool_interactions: list["ToolInteraction"] | None = None,
         model: str | None = None,
         api_request_id: str | None = None,
         token_count: int | None = None,
@@ -249,6 +304,7 @@ class TurnData:
             response_hash=sha256_hex(response.encode("utf-8")),
             artifacts=arts,
             tool_calls=tool_calls or [],
+            tool_interactions=tool_interactions or [],
             model=model,
             api_request_id=api_request_id,
             token_count=token_count,
@@ -338,6 +394,7 @@ class Chain:
         artifact_paths: list[str | Path] | None = None,
         artifacts: list[ArtifactRef] | None = None,
         tool_calls: list[str] | None = None,
+        tool_interactions: list[ToolInteraction] | None = None,
         model: str | None = None,
         api_request_id: str | None = None,
         token_count: int | None = None,
@@ -349,6 +406,7 @@ class Chain:
             artifact_paths=artifact_paths,
             artifacts=artifacts,
             tool_calls=tool_calls,
+            tool_interactions=tool_interactions,
             model=model,
             api_request_id=api_request_id,
             token_count=token_count,

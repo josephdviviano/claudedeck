@@ -218,3 +218,96 @@ class TestBundleArtifacts:
         result = verify_proof_bundle(bundle)
         assert result.is_valid is False
         assert any("ARTIFACT" in c["detail"] for c in result.checks)
+
+
+# ---------------------------------------------------------------------------
+# Anchor requirement and trust level
+# ---------------------------------------------------------------------------
+
+class TestAnchorRequirement:
+    def test_unanchored_fails_with_require_anchor(self, chain_3turns, vault_data):
+        bundle = _make_bundle(chain_3turns, vault_data)
+        result = verify_proof_bundle(bundle, require_anchor=True)
+        assert result.is_valid is False
+        anchor_check = next(c for c in result.checks if c["check"] == "anchors")
+        assert anchor_check["passed"] is False
+        assert "forgeable" in anchor_check["detail"].lower()
+
+    def test_unanchored_passes_without_flag_but_warns(self, chain_3turns, vault_data):
+        bundle = _make_bundle(chain_3turns, vault_data)
+        result = verify_proof_bundle(bundle)
+        assert result.is_valid is True
+        anchor_check = next(c for c in result.checks if c["check"] == "anchors")
+        assert "UNANCHORED" in anchor_check["detail"]
+
+    def test_anchored_passes_with_require_anchor(self, chain_3turns, vault_data):
+        anchor = AnchorRef(
+            anchor_type="sigstore",
+            chain_head_hash=chain_3turns.head_hash,
+            reference="rekor:12345",
+            timestamp="2026-03-15T12:00:00Z",
+        )
+        bundle = _make_bundle(chain_3turns, vault_data, anchors=[anchor])
+        result = verify_proof_bundle(bundle, require_anchor=True)
+        assert result.is_valid is True
+
+    def test_local_anchor_passes_with_require_anchor(self, chain_3turns, vault_data):
+        anchor = AnchorRef(
+            anchor_type="local",
+            chain_head_hash=chain_3turns.head_hash,
+            reference="local:log_index=0",
+        )
+        bundle = _make_bundle(chain_3turns, vault_data, anchors=[anchor])
+        result = verify_proof_bundle(bundle, require_anchor=True)
+        assert result.is_valid is True
+
+
+class TestTrustLevel:
+    def test_unanchored(self, chain_3turns, vault_data):
+        bundle = _make_bundle(chain_3turns, vault_data)
+        result = verify_proof_bundle(bundle)
+        assert result.trust_level == "unanchored"
+
+    def test_local_only(self, chain_3turns, vault_data):
+        anchor = AnchorRef(
+            anchor_type="local",
+            chain_head_hash=chain_3turns.head_hash,
+            reference="local:0",
+        )
+        bundle = _make_bundle(chain_3turns, vault_data, anchors=[anchor])
+        result = verify_proof_bundle(bundle)
+        assert result.trust_level == "local_only"
+
+    def test_anchored_sigstore(self, chain_3turns, vault_data):
+        anchor = AnchorRef(
+            anchor_type="sigstore",
+            chain_head_hash=chain_3turns.head_hash,
+            reference="rekor:12345",
+        )
+        bundle = _make_bundle(chain_3turns, vault_data, anchors=[anchor])
+        result = verify_proof_bundle(bundle)
+        assert result.trust_level == "anchored"
+
+    def test_anchored_mixed(self, chain_3turns, vault_data):
+        anchors = [
+            AnchorRef(anchor_type="local", chain_head_hash=chain_3turns.head_hash, reference="local:0"),
+            AnchorRef(anchor_type="ots", chain_head_hash=chain_3turns.head_hash, reference="ots:proof.ots"),
+        ]
+        bundle = _make_bundle(chain_3turns, vault_data, anchors=anchors)
+        result = verify_proof_bundle(bundle)
+        assert result.trust_level == "anchored"
+
+    def test_summary_includes_trust_level(self, chain_3turns, vault_data):
+        bundle = _make_bundle(chain_3turns, vault_data)
+        result = verify_proof_bundle(bundle)
+        assert "[UNANCHORED]" in result.summary()
+
+    def test_summary_anchored(self, chain_3turns, vault_data):
+        anchor = AnchorRef(
+            anchor_type="sigstore",
+            chain_head_hash=chain_3turns.head_hash,
+            reference="rekor:12345",
+        )
+        bundle = _make_bundle(chain_3turns, vault_data, anchors=[anchor])
+        result = verify_proof_bundle(bundle)
+        assert "[ANCHORED]" in result.summary()

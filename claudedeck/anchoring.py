@@ -250,8 +250,14 @@ def verify_anchor(entry: dict, deck_dir: Path) -> tuple[bool, str]:
         timestamp = entry.get("timestamp", "")
         if not signature:
             return False, "Local anchor entry missing signature"
-        from .local_anchor import verify_local
-        return verify_local(chain_head_hash, signature, timestamp, deck_dir)
+        from .local_anchor import verify_local, check_key_consistency
+        ok, detail = verify_local(chain_head_hash, signature, timestamp, deck_dir)
+        # Surface key consistency warning if signature is valid
+        if ok:
+            consistent, consistency_detail = check_key_consistency(deck_dir)
+            if not consistent:
+                detail += f" (WARNING: {consistency_detail})"
+        return ok, detail
 
     elif anchor_type == "sigstore":
         from .signing import verify_with_sigstore

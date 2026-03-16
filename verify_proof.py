@@ -104,6 +104,26 @@ def verify_disclosures(records: list[dict], disclosed: list[dict]) -> tuple[bool
             elif sha256_hex(content.encode("utf-8")) != expected:
                 errors.append(f"Seq {seq}: ARTIFACT '{filename}' HASH MISMATCH")
 
+        # Verify disclosed tool interactions
+        chain_interactions = {
+            ti["tool_use_id"]: ti
+            for ti in rec["turn"].get("tool_interactions", [])
+        }
+        for dti in turn.get("tool_interactions", []):
+            tid = dti["tool_use_id"]
+            chain_ti = chain_interactions.get(tid)
+            if chain_ti is None:
+                errors.append(f"Seq {seq}: tool interaction '{tid}' not in chain record")
+                continue
+            # Verify input hash
+            input_hash = sha256_hex(canonical_json(dti["input"]))
+            if input_hash != chain_ti["input_hash"]:
+                errors.append(f"Seq {seq}: TOOL INPUT HASH MISMATCH for {dti['tool_name']}")
+            # Verify result hash
+            result_hash = sha256_hex(dti["result"].encode("utf-8"))
+            if result_hash != chain_ti["result_hash"]:
+                errors.append(f"Seq {seq}: TOOL RESULT HASH MISMATCH for {dti['tool_name']}")
+
     return len(errors) == 0, errors
 
 
@@ -129,12 +149,13 @@ def verify_local_artifact(records: list[dict], filepath: str) -> tuple[bool, str
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python verify_proof.py <bundle.proof.json> [--verbose] [--check-artifact FILE]")
+        print("Usage: python verify_proof.py <bundle.proof.json> [--verbose] [--require-anchor] [--check-artifact FILE]")
         sys.exit(1)
 
     bundle_path = sys.argv[1]
     verbose = "--verbose" in sys.argv
-    
+    require_anchor = "--require-anchor" in sys.argv
+
     artifact_check = None
     if "--check-artifact" in sys.argv:
         idx = sys.argv.index("--check-artifact")
@@ -185,6 +206,9 @@ def main():
                     print(f"         Prompt: \"{prompt_preview}...\"")
                 if n_artifacts:
                     print(f"         {n_artifacts} artifact(s) verified")
+                n_tool_interactions = len(turn.get("tool_interactions", []))
+                if n_tool_interactions:
+                    print(f"         {n_tool_interactions} tool interaction(s) verified")
         else:
             for err in content_errors:
                 print(f"  [FAIL] {err}")
@@ -193,7 +217,15 @@ def main():
     print(f"\n--- External Anchors ---")
     anchors = bundle.get("anchors", [])
     if not anchors:
-        print(f"  [INFO] No external anchors. Chain is self-consistent but unanchored.")
+        if require_anchor:
+            print(f"  [FAIL] No external anchors — bundle is trivially forgeable.")
+            print(f"         Anyone can fabricate a valid-looking chain without anchors.")
+            print(f"         Use 'claudedeck anchor' before generating the proof bundle.")
+            all_ok = False
+        else:
+            print(f"  [WARNING] UNANCHORED — no external anchors present.")
+            print(f"            Chain is self-consistent but could have been fabricated.")
+            print(f"            Use --require-anchor to enforce anchor presence.")
     else:
         head_hash = records[-1]["record_hash"] if records else ""
         for a in anchors:

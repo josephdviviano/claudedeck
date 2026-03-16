@@ -17,7 +17,7 @@ import sys
 import os
 from pathlib import Path
 
-from claudedeck.core import Chain, ArtifactRef, sha256_file, file_lock
+from claudedeck.core import Chain, ArtifactRef, ToolInteraction, sha256_file, file_lock, canonical_json, sha256_hex
 from claudedeck.snapshot import FileSnapshot
 
 
@@ -92,6 +92,22 @@ def extract_turns(records: list[dict]) -> list[dict]:
         file_ops = extract_file_operations(tool_calls_in_turn)
         tool_names = get_tool_names(tool_calls_in_turn)
 
+        # Extract tool results and pair with inputs for full I/O capture
+        tool_results = extract_tool_results(records, prompt_uuid, next_prompt_uuid)
+        tool_interactions = build_tool_interactions(tool_calls_in_turn, tool_results)
+
+        # Build plaintext tool I/O for vault storage (so proof bundles can disclose)
+        tool_io_plaintext = []
+        for tc in tool_calls_in_turn:
+            tid = tc.get("id", "")
+            if tid:
+                tool_io_plaintext.append({
+                    "tool_name": tc["name"],
+                    "tool_use_id": tid,
+                    "input": tc.get("input", {}),
+                    "result": tool_results.get(tid, ""),
+                })
+
         turns.append({
             "prompt": prompt_text,
             "response": response_text,
@@ -100,6 +116,8 @@ def extract_turns(records: list[dict]) -> list[dict]:
             "timestamp": timestamp,
             "prompt_uuid": prompt_uuid,
             "tool_calls": tool_names,
+            "tool_interactions": tool_interactions,
+            "tool_io_plaintext": tool_io_plaintext,
             "file_operations": file_ops,
         })
 
@@ -266,6 +284,81 @@ def get_tool_names(tool_calls: list[dict]) -> list[str]:
         if name not in seen:
             seen.append(name)
     return seen
+
+
+def extract_tool_results(
+    all_records: list[dict],
+    prompt_uuid: str,
+    next_prompt_uuid: str | None,
+) -> dict[str, str]:
+    """Extract tool_result content from relay messages within a turn.
+
+    Tool results appear as user messages WITHOUT a promptId field,
+    containing content blocks of type "tool_result" with a tool_use_id
+    linking back to the corresponding tool_use block.
+
+    Returns dict mapping tool_use_id -> result content string.
+    """
+    start_idx = None
+    end_idx = len(all_records)
+    for i, rec in enumerate(all_records):
+        if rec.get("uuid") == prompt_uuid:
+            start_idx = i
+        if next_prompt_uuid and rec.get("uuid") == next_prompt_uuid:
+            end_idx = i
+            break
+
+    if start_idx is None:
+        return {}
+
+    results = {}
+    for rec in all_records[start_idx:end_idx]:
+        # Tool result relays are user messages without promptId
+        if rec.get("type") != "user" or rec.get("promptId"):
+            continue
+        content = rec.get("message", {}).get("content", [])
+        if isinstance(content, str):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                tool_use_id = block.get("tool_use_id", "")
+                result_content = block.get("content", "")
+                # Content can be a string or a list of content blocks
+                if isinstance(result_content, list):
+                    parts = []
+                    for part in result_content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            parts.append(part.get("text", ""))
+                        elif isinstance(part, str):
+                            parts.append(part)
+                    result_content = "\n".join(parts)
+                if tool_use_id:
+                    results[tool_use_id] = result_content
+    return results
+
+
+def build_tool_interactions(
+    tool_calls: list[dict],
+    tool_results: dict[str, str],
+) -> list[ToolInteraction]:
+    """Pair tool_use inputs with their results to create ToolInteractions.
+
+    Each ToolInteraction hashes both the input parameters and result content,
+    so the full information flow is cryptographically bound to the chain.
+    """
+    interactions = []
+    for tc in tool_calls:
+        tool_use_id = tc.get("id", "")
+        if not tool_use_id:
+            continue
+        result_content = tool_results.get(tool_use_id, "")
+        interactions.append(ToolInteraction.from_plaintext(
+            tool_name=tc["name"],
+            tool_use_id=tool_use_id,
+            input_params=tc.get("input", {}),
+            result_content=result_content,
+        ))
+    return interactions
 
 
 # ---------------------------------------------------------------------------
@@ -513,11 +606,12 @@ def main():
                 response=turn["response"],
                 artifacts=artifacts,
                 tool_calls=turn.get("tool_calls", []),
+                tool_interactions=turn.get("tool_interactions", []),
                 model=turn["model"],
                 api_request_id=turn.get("request_id"),
             )
 
-            # Store plaintext in vault
+            # Store plaintext in vault (including tool I/O for disclosure)
             vault_entry = {
                 "prompt": turn["prompt"],
                 "response": turn["response"],
@@ -526,6 +620,8 @@ def main():
             }
             if turn.get("file_operations"):
                 vault_entry["file_operations"] = turn["file_operations"]
+            if turn.get("tool_io_plaintext"):
+                vault_entry["tool_interactions"] = turn["tool_io_plaintext"]
             vault_data[str(record.seq)] = vault_entry
 
         # Save everything

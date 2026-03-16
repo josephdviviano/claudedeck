@@ -170,3 +170,103 @@ def make_tool_use_session():
     })
 
     return records
+
+
+def make_multi_tool_session():
+    """Build JSONL records for a session with multiple tool calls in one turn."""
+    records = []
+
+    records.append({
+        "type": "user",
+        "uuid": "user-0001",
+        "parentUuid": None,
+        "promptId": "prompt-1",
+        "message": {"role": "user", "content": "Read config and write output"},
+        "timestamp": "2026-03-15T12:00:00.000Z",
+        "sessionId": "multi-tool-session",
+    })
+
+    # Assistant: first tool call
+    records.append({
+        "type": "assistant",
+        "uuid": "asst-0001",
+        "parentUuid": "user-0001",
+        "message": {
+            "role": "assistant",
+            "model": "claude-opus-4-6",
+            "content": [
+                {"type": "text", "text": "I'll read the config first."},
+                {"type": "tool_use", "id": "toolu_001", "name": "Read",
+                 "input": {"file_path": "/app/config.yaml"}},
+            ],
+            "stop_reason": None,
+        },
+        "requestId": "req_0001",
+        "timestamp": "2026-03-15T12:00:01.000Z",
+        "sessionId": "multi-tool-session",
+    })
+
+    # Tool result for Read
+    records.append({
+        "type": "user",
+        "uuid": "user-0002",
+        "parentUuid": "asst-0001",
+        "message": {
+            "role": "user",
+            "content": [{"tool_use_id": "toolu_001", "type": "tool_result",
+                         "content": "db_host: localhost\ndb_port: 5432"}],
+        },
+        "timestamp": "2026-03-15T12:00:02.000Z",
+        "sessionId": "multi-tool-session",
+    })
+
+    # Assistant: second tool call
+    records.append({
+        "type": "assistant",
+        "uuid": "asst-0002",
+        "parentUuid": "user-0002",
+        "message": {
+            "role": "assistant",
+            "model": "claude-opus-4-6",
+            "content": [
+                {"type": "tool_use", "id": "toolu_002", "name": "Write",
+                 "input": {"file_path": "/app/output.txt", "content": "Config loaded."}},
+            ],
+            "stop_reason": None,
+        },
+        "requestId": "req_0002",
+        "timestamp": "2026-03-15T12:00:03.000Z",
+        "sessionId": "multi-tool-session",
+    })
+
+    # Tool result for Write
+    records.append({
+        "type": "user",
+        "uuid": "user-0003",
+        "parentUuid": "asst-0002",
+        "message": {
+            "role": "user",
+            "content": [{"tool_use_id": "toolu_002", "type": "tool_result",
+                         "content": "File written successfully."}],
+        },
+        "timestamp": "2026-03-15T12:00:04.000Z",
+        "sessionId": "multi-tool-session",
+    })
+
+    # Assistant: final response
+    records.append({
+        "type": "assistant",
+        "uuid": "asst-0003",
+        "parentUuid": "user-0003",
+        "message": {
+            "role": "assistant",
+            "model": "claude-opus-4-6",
+            "content": [{"type": "text", "text": "Done! Config read and output written."}],
+            "stop_reason": "end_turn",
+        },
+        "requestId": "req_0003",
+        "timestamp": "2026-03-15T12:00:05.000Z",
+        "sessionId": "multi-tool-session",
+    })
+
+    return records

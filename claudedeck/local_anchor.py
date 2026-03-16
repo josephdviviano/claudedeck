@@ -42,6 +42,10 @@ def _key_path(deck_dir: Path) -> Path:
     return deck_dir / "local_anchor.key"
 
 
+def _fingerprint_path(deck_dir: Path) -> Path:
+    return deck_dir / "key_fingerprint"
+
+
 def _log_path(deck_dir: Path) -> Path:
     return deck_dir / "anchor_log.jsonl"
 
@@ -52,8 +56,15 @@ def _load_or_create_key(deck_dir: Path) -> tuple[bytes, str]:
     Returns (key_bytes, key_id) where key_id is the SHA-256 of the key
     (safe to embed in proof bundles — it identifies the key without
     revealing it).
+
+    On first key creation, writes a fingerprint file so that key
+    replacement can be detected. On subsequent loads, warns to stderr
+    if the key_id doesn't match the pinned fingerprint.
     """
+    import sys
+
     kp = _key_path(deck_dir)
+    fp = _fingerprint_path(deck_dir)
     if kp.exists():
         key = kp.read_bytes()
     else:
@@ -61,8 +72,74 @@ def _load_or_create_key(deck_dir: Path) -> tuple[bytes, str]:
         key = secrets.token_bytes(32)
         kp.write_bytes(key)
         kp.chmod(0o600)  # owner-only read/write
+
     key_id = hashlib.sha256(key).hexdigest()
+
+    # Pin or verify fingerprint
+    if fp.exists():
+        pinned = fp.read_text().strip()
+        if pinned != key_id:
+            print(
+                f"WARNING: Local anchor key fingerprint mismatch!\n"
+                f"  Pinned:  {pinned[:16]}...\n"
+                f"  Current: {key_id[:16]}...\n"
+                f"  The key may have been regenerated. Old anchors signed with "
+                f"the previous key cannot be verified with the current key.",
+                file=sys.stderr,
+            )
+    else:
+        # First time — pin the fingerprint
+        deck_dir.mkdir(parents=True, exist_ok=True)
+        fp.write_text(key_id + "\n")
+
     return key, key_id
+
+
+def check_key_consistency(deck_dir: Path) -> tuple[bool, str]:
+    """Check if the current key matches all key_ids in the anchor log.
+
+    Returns (is_consistent, detail_message).
+    """
+    kp = _key_path(deck_dir)
+    if not kp.exists():
+        return True, "No local anchor key present"
+
+    key = kp.read_bytes()
+    current_id = hashlib.sha256(key).hexdigest()
+
+    log = _log_path(deck_dir)
+    if not log.exists():
+        return True, "No anchor log entries to check"
+
+    mismatched = []
+    with open(log) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            entry_key_id = entry.get("key_id")
+            if entry_key_id and entry_key_id != current_id:
+                mismatched.append(entry.get("index", "?"))
+
+    if mismatched:
+        return False, (
+            f"Key rotation detected: log entries {mismatched} were signed with a different key "
+            f"(current key_id: {current_id[:16]}...)"
+        )
+    return True, f"All log entries consistent with current key (key_id: {current_id[:16]}...)"
+
+
+def export_key_fingerprint(deck_dir: Path) -> str:
+    """Return the current key's SHA-256 fingerprint for out-of-band recording."""
+    kp = _key_path(deck_dir)
+    if not kp.exists():
+        raise FileNotFoundError("No local anchor key found")
+    key = kp.read_bytes()
+    return hashlib.sha256(key).hexdigest()
 
 
 def sign_local(chain_head_hash: str, deck_dir: Path) -> LocalAnchorResult:

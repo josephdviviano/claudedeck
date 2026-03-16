@@ -10,7 +10,10 @@ from claudedeck.local_anchor import (
     verify_from_log,
     _load_or_create_key,
     _key_path,
+    _fingerprint_path,
     _log_path,
+    check_key_consistency,
+    export_key_fingerprint,
 )
 
 
@@ -288,3 +291,65 @@ class TestEndToEnd:
             entries = [json.loads(line) for line in f]
         assert len(entries) == 5
         assert [e["index"] for e in entries] == [0, 1, 2, 3, 4]
+
+
+# ---------------------------------------------------------------------------
+# Key pinning
+# ---------------------------------------------------------------------------
+
+class TestKeyPinning:
+    def test_fingerprint_file_created(self, tmp_path):
+        _load_or_create_key(tmp_path)
+        assert _fingerprint_path(tmp_path).exists()
+
+    def test_fingerprint_matches_key_id(self, tmp_path):
+        _, key_id = _load_or_create_key(tmp_path)
+        pinned = _fingerprint_path(tmp_path).read_text().strip()
+        assert pinned == key_id
+
+    def test_reload_does_not_warn(self, tmp_path, capsys):
+        _load_or_create_key(tmp_path)
+        _load_or_create_key(tmp_path)
+        captured = capsys.readouterr()
+        assert "WARNING" not in captured.err
+
+    def test_key_delete_and_regen_triggers_warning(self, tmp_path, capsys):
+        _load_or_create_key(tmp_path)
+        # Delete key, forcing regeneration
+        _key_path(tmp_path).unlink()
+        _load_or_create_key(tmp_path)
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "mismatch" in captured.err.lower()
+
+    def test_consistency_check_passes(self, tmp_path):
+        chain = Chain()
+        chain.append_turn(prompt="hello", response="world")
+        sign_local(chain.head_hash, tmp_path)
+
+        ok, detail = check_key_consistency(tmp_path)
+        assert ok is True
+        assert "consistent" in detail.lower()
+
+    def test_consistency_check_fails_after_key_rotation(self, tmp_path):
+        chain = Chain()
+        chain.append_turn(prompt="hello", response="world")
+        sign_local(chain.head_hash, tmp_path)
+
+        # Replace key
+        import secrets
+        _key_path(tmp_path).write_bytes(secrets.token_bytes(32))
+
+        ok, detail = check_key_consistency(tmp_path)
+        assert ok is False
+        assert "rotation" in detail.lower()
+
+    def test_export_key_fingerprint(self, tmp_path):
+        _, key_id = _load_or_create_key(tmp_path)
+        exported = export_key_fingerprint(tmp_path)
+        assert exported == key_id
+        assert len(exported) == 64
+
+    def test_export_key_fingerprint_missing_key(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            export_key_fingerprint(tmp_path)

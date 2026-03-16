@@ -583,7 +583,10 @@ def cmd_proof(args):
     if anchors:
         types = [a.anchor_type for a in anchors]
         print(f"  anchors:         {types}")
-    print(f"  verify with: python verify_proof.py {output} --verbose")
+    if not anchors:
+        print(f"\n  NOTE: This bundle has no external anchors and is trivially forgeable.")
+        print(f"        Run 'claudedeck anchor {sid or ''}' then regenerate for verifiable provenance.")
+    print(f"\n  verify with: python verify_proof.py {output} --verbose")
 
     # C2PA export if requested
     if getattr(args, "c2pa", False):
