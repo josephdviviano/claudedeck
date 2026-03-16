@@ -585,6 +585,16 @@ def cmd_proof(args):
         print(f"  anchors:         {types}")
     print(f"  verify with: python verify_proof.py {output} --verbose")
 
+    # C2PA export if requested
+    if getattr(args, "c2pa", False):
+        from claudedeck.c2pa_export import export_c2pa_manifest
+
+        c2pa_result = export_c2pa_manifest(bundle, output)
+        if c2pa_result.success:
+            print(f"\nC2PA manifest: {c2pa_result.manifest_path}")
+        else:
+            print(f"\nC2PA export failed: {c2pa_result.error}")
+
 
 def cmd_anchor(args):
     """Anchor a session's chain head."""
@@ -688,6 +698,65 @@ def cmd_anchor_verify(args):
         ok, detail = verify_anchor(entry, deck_dir)
         status = "PASS" if ok else "FAIL"
         print(f"  [{status}] [{anchor_type}] index={entry['index']}  {detail}")
+
+
+def cmd_c2pa_verify(args):
+    """Verify a C2PA manifest for a proof bundle."""
+    try:
+        root = find_project_root()
+    except FileNotFoundError:
+        print("Error: not in a project directory")
+        sys.exit(1)
+
+    deck_dir = get_deck_dir(root)
+
+    manifest_path = getattr(args, "manifest", None)
+    if manifest_path is None:
+        # Auto-find from session
+        sid = resolve_session(args, deck_dir)
+        if sid is None:
+            print("No sessions found in .claudedeck/")
+            sys.exit(1)
+        manifest_path = str(deck_dir / f"{sid}.proof.c2pa.png")
+
+    if not Path(manifest_path).exists():
+        print(f"C2PA manifest not found: {manifest_path}")
+        print("Generate one with: claudedeck proof --c2pa")
+        sys.exit(1)
+
+    from claudedeck.c2pa_export import verify_c2pa_manifest, read_c2pa_manifest
+
+    # Optionally cross-check against chain
+    expected_head = None
+    sid = resolve_session(args, deck_dir)
+    if sid:
+        chain_path = deck_dir / f"{sid}.chain.jsonl"
+        if chain_path.exists():
+            chain = Chain.load(chain_path)
+            expected_head = chain.head_hash
+
+    ok, detail = verify_c2pa_manifest(manifest_path, expected_head)
+
+    if ok:
+        print(f"C2PA verification: VALID")
+        print(f"  {detail}")
+        if expected_head:
+            print(f"  chain head: {format_hash(expected_head, 24)}")
+
+        # Show manifest contents
+        store = read_c2pa_manifest(manifest_path)
+        if store:
+            active_label = store.get("active_manifest", "")
+            active = store.get("manifests", {}).get(active_label, {})
+            for a in active.get("assertions", []):
+                if a.get("label") == "org.claudedeck.chain":
+                    data = a.get("data", {})
+                    print(f"  records:   {data.get('num_records', '?')}")
+                    print(f"  disclosed: {data.get('disclosed_sequences', '?')}")
+    else:
+        print(f"C2PA verification: INVALID")
+        print(f"  {detail}")
+        sys.exit(1)
 
 
 def cmd_session(args):
@@ -825,6 +894,7 @@ def main():
     p_proof.add_argument("--seqs", metavar="0,1,2", help="Turns to disclose (default: all)")
     p_proof.add_argument("--output", "-o", help="Output file path")
     p_proof.add_argument("--no-anchors", action="store_true", help="Exclude anchors from bundle")
+    p_proof.add_argument("--c2pa", action="store_true", help="Also export a C2PA manifest (requires c2pa-python)")
 
     # anchor
     p_anchor = sub.add_parser("anchor", help="Anchor chain head")
@@ -837,6 +907,11 @@ def main():
     p_anchor_v.add_argument("session", nargs="?", help="Session ID (default: most recent)")
     p_anchor_v.add_argument("--backend", "-b", choices=["local", "sigstore", "ots"], default=None,
                             help="Filter by backend type (default: all)")
+
+    # c2pa-verify
+    p_c2pa_v = sub.add_parser("c2pa-verify", help="Verify a C2PA manifest")
+    p_c2pa_v.add_argument("session", nargs="?", help="Session ID (default: most recent)")
+    p_c2pa_v.add_argument("--manifest", "-m", help="Path to C2PA manifest file")
 
     # session (legacy REPL)
     p_session = sub.add_parser("session", help="Interactive REPL session (legacy)")
@@ -855,6 +930,7 @@ def main():
         "proof": cmd_proof,
         "anchor": cmd_anchor,
         "anchor-verify": cmd_anchor_verify,
+        "c2pa-verify": cmd_c2pa_verify,
         "session": cmd_session,
     }
 

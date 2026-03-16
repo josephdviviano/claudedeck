@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.jpg" alt="claudedeck" width="300" />
+</p>
+
 # claudedeck
 
 Cryptographic provenance for AI coding sessions. Prove that a specific interaction with an AI model produced a specific result — with no omissions, no insertions, and no modifications.
@@ -193,8 +197,8 @@ claudedeck runs as a **Claude Code Stop hook** — it fires silently after each 
 - [x] Proof bundles auto-include anchors
 - [x] Conversation viewer with tool-use collapsing (`show`)
 - [x] Standalone zero-dependency verifier (`verify_proof.py`)
-- [x] Comprehensive test suite (185 tests)
-- [ ] C2PA-compatible manifest output (interop with Adobe/Google/Microsoft content provenance ecosystem)
+- [x] Comprehensive test suite (232 tests)
+- [x] C2PA-compatible manifest output (interop with Adobe/Google/Microsoft content provenance ecosystem)
 - [ ] Merkle tree for efficient partial verification of long sessions
 - [ ] Integration with Anthropic's API response headers (api_request_id correlation)
 - [ ] Server-side response co-signing (pending Anthropic support)
@@ -206,7 +210,7 @@ claudedeck runs as a **Claude Code Stop hook** — it fires silently after each 
 # Install in development mode
 pip install -e ".[dev]"
 
-# Run tests (185 tests)
+# Run tests (232 tests)
 pytest
 
 # Run the legacy demo

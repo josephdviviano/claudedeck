@@ -102,8 +102,8 @@ class ProofBundle:
         }
 
     def save(self, path: str | Path):
-        with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2, sort_keys=True)
+        from .core import atomic_write
+        atomic_write(path, json.dumps(self.to_dict(), indent=2, sort_keys=True))
 
     @classmethod
     def load(cls, path: str | Path) -> "ProofBundle":

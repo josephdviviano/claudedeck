@@ -80,18 +80,25 @@ def sign_local(chain_head_hash: str, deck_dir: Path) -> LocalAnchorResult:
     message = f"{safe_hash}:{timestamp}".encode("utf-8")
     signature = hmac.new(key, message, hashlib.sha256).hexdigest()
 
-    # Append to anchor log
+    # Append to anchor log (with file lock and HMAC)
+    from .core import file_lock
     log = _log_path(deck_dir)
-    log_index = _count_lines(log)
-    entry = {
-        "index": log_index,
-        "chain_head_hash": safe_hash,
-        "timestamp": timestamp,
-        "signature": signature,
-        "key_id": key_id,
-    }
-    with open(log, "a") as f:
-        f.write(json.dumps(entry, sort_keys=True) + "\n")
+    with file_lock(log):
+        log_index = _count_lines(log)
+        entry = {
+            "index": log_index,
+            "chain_head_hash": safe_hash,
+            "timestamp": timestamp,
+            "signature": signature,
+            "key_id": key_id,
+        }
+        try:
+            from .integrity import hmac_json
+            entry["_hmac"] = hmac_json(entry, deck_dir)
+        except Exception:
+            pass
+        with open(log, "a") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
 
     return LocalAnchorResult(
         success=True,

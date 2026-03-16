@@ -85,11 +85,16 @@ class TestCLIVerify:
         chain.append_turn(prompt="hello", response="world")
         chain.save(deck_dir / "test-session.chain.jsonl")
 
-        # Tamper with the chain file
+        # Tamper with the chain file (find the record line, modify it)
         chain_path = deck_dir / "test-session.chain.jsonl"
-        data = json.loads(chain_path.read_text().strip())
-        data["record_hash"] = "f" * 64
-        chain_path.write_text(json.dumps(data) + "\n")
+        lines = chain_path.read_text().strip().split("\n")
+        tampered_lines = []
+        for line in lines:
+            d = json.loads(line)
+            if d.get("record_hash"):
+                d["record_hash"] = "f" * 64
+            tampered_lines.append(json.dumps(d))
+        chain_path.write_text("\n".join(tampered_lines) + "\n")
 
         from claudedeck.__main__ import cmd_verify
         args = type("Args", (), {"session": "test-session"})()

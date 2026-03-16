@@ -20,6 +20,7 @@ This script verifies:
 import hashlib
 import json
 import sys
+import unicodedata
 from pathlib import Path
 
 
@@ -27,8 +28,20 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _normalize_unicode(obj):
+    """Recursively NFC-normalize all string values and keys."""
+    if isinstance(obj, str):
+        return unicodedata.normalize("NFC", obj)
+    if isinstance(obj, dict):
+        return {_normalize_unicode(k): _normalize_unicode(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_normalize_unicode(item) for item in obj]
+    return obj
+
+
 def canonical_json(obj: dict) -> bytes:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    normalized = _normalize_unicode(obj)
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
 
 def verify_chain(records: list[dict]) -> tuple[bool, list[str]]:
@@ -43,6 +56,8 @@ def verify_chain(records: list[dict]) -> tuple[bool, list[str]]:
             "timestamp": rec["timestamp"],
             "prev_hash": rec["prev_hash"],
         }
+        if "chain_id" in rec:
+            hashable["chain_id"] = rec["chain_id"]
         expected = sha256_hex(canonical_json(hashable))
         if rec["record_hash"] != expected:
             errors.append(f"Record {i} (seq {rec['seq']}): hash mismatch")

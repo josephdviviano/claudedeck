@@ -16,7 +16,8 @@ dependencies = []
 
 [project.optional-dependencies]
 vault = ["cryptography"]
-dev = ["pytest", "cryptography"]
+c2pa = ["c2pa-python>=0.6.0", "cryptography"]
+dev = ["pytest", "cryptography", "c2pa-python>=0.6.0"]
 
 [project.scripts]
 claudedeck = "claudedeck.__main__:main"

@@ -45,7 +45,7 @@ python demo.py
 # Verify a proof bundle (zero dependencies)
 python verify_proof.py <bundle.json> [--verbose] [--check-artifact <file>]
 
-# Run test suite (185 tests)
+# Run test suite (232 tests)
 python -m pytest tests/ -v
 ```
 
@@ -53,7 +53,7 @@ python -m pytest tests/ -v
 
 The `claudedeck/` package contains:
 
-- **`__main__.py`** — CLI with subcommands: `on`, `off`, `status`, `verify`, `inspect`, `show`, `proof`, `anchor`, `anchor-verify`, `session`.
+- **`__main__.py`** — CLI with subcommands: `on`, `off`, `status`, `verify`, `inspect`, `show`, `proof`, `anchor`, `anchor-verify`, `c2pa-verify`, `session`.
 - **`hook.py`** — Claude Code `Stop` hook. Reads session JSONL transcripts, extracts turns, appends to hash chain. Runs silently after each assistant response.
 - **`settings.py`** — Project settings management. Installs/removes the hook in `.claude/settings.local.json`.
 - **`core.py`** — Hash chain data model (`Chain`, `ChainRecord`, `TurnData`, `ArtifactRef`). Append-only chain with JSONL persistence. Zero external dependencies (stdlib only). All hashing uses `canonical_json()` for deterministic serialization.
@@ -62,6 +62,7 @@ The `claudedeck/` package contains:
 - **`signing.py`** — "Signing airlock" that structurally ensures only 64-char SHA-256 hex digests reach external services. Contains `sign_with_sigstore`, `stamp_with_ots`, `verify_with_sigstore`, `verify_with_ots`, and `anchor_chain_head`. Security-critical module.
 - **`anchoring.py`** — Unified anchor orchestrator. Dispatches to local, Sigstore, or OpenTimestamps backends via `anchor()` and `anchor_all()`. Writes all results to a single `anchor_log.jsonl` with a uniform schema. Handles verification dispatch via `verify_anchor()`.
 - **`local_anchor.py`** — Local signing backend for dev/testing. HMAC-SHA256 with an auto-generated key (`.claudedeck/local_anchor.key`, mode 0o600). Append-only anchor log. Not a substitute for Sigstore/OTS in production.
+- **`c2pa_export.py`** — C2PA-compatible manifest generation. Creates signed PNG carrier files with embedded C2PA manifests containing chain metadata (head hash, record count, disclosed sequences, anchors). Uses self-signed CA + leaf cert chain with ES256. Requires `c2pa-python` and `cryptography` (optional dependency).
 - **`verify_proof.py`** — Standalone verifier script (root level). Intentionally duplicates core hash logic so it has zero dependencies and can be distributed independently. Prints backend-specific verification instructions.
 - **`demo.py`** — Simulates a full session: record turns, encrypt vault, create proof bundle, verify, and demonstrate tamper detection.
 

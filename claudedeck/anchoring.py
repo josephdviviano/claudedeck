@@ -44,18 +44,25 @@ def _count_lines(path: Path) -> int:
 
 def _write_log_entry(deck_dir: Path, result: AnchorResult) -> int:
     """Append an anchor result to the unified log. Returns the log index."""
+    from .core import file_lock
     log = _log_path(deck_dir)
-    log_index = _count_lines(log)
-    entry = {
-        "index": log_index,
-        "anchor_type": result.anchor_type,
-        "chain_head_hash": result.chain_head_hash,
-        "timestamp": result.timestamp,
-        "reference": result.reference,
-        "extra": result.extra,
-    }
-    with open(log, "a") as f:
-        f.write(json.dumps(entry, sort_keys=True) + "\n")
+    with file_lock(log):
+        log_index = _count_lines(log)
+        entry = {
+            "index": log_index,
+            "anchor_type": result.anchor_type,
+            "chain_head_hash": result.chain_head_hash,
+            "timestamp": result.timestamp,
+            "reference": result.reference,
+            "extra": result.extra,
+        }
+        try:
+            from .integrity import hmac_json
+            entry["_hmac"] = hmac_json(entry, deck_dir)
+        except Exception:
+            pass
+        with open(log, "a") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
     return log_index
 
 
@@ -67,11 +74,27 @@ def read_log_entries(deck_dir: Path, chain_head_hash: str | None = None) -> list
     entries = []
     with open(log) as f:
         for line in f:
-            entry = json.loads(line.strip())
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             # Backward compat: old entries without anchor_type are local
             entry.setdefault("anchor_type", "local")
             entry.setdefault("reference", "")
             entry.setdefault("extra", {})
+            # Verify HMAC if present
+            stored_hmac = entry.pop("_hmac", None)
+            if stored_hmac is not None:
+                try:
+                    from .integrity import verify_hmac_json
+                    entry["_hmac_valid"] = verify_hmac_json(entry, stored_hmac, deck_dir)
+                except Exception:
+                    entry["_hmac_valid"] = None
+            else:
+                entry["_hmac_valid"] = None  # legacy entry
             if chain_head_hash is None or entry["chain_head_hash"] == chain_head_hash:
                 entries.append(entry)
     return entries
