@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.claudedeck/
+sessions/
+.claude/settings.local.json
