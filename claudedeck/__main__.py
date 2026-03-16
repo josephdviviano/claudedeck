@@ -528,7 +528,7 @@ def cmd_proof(args):
     else:
         seqs = list(range(len(chain.records)))
 
-    from claudedeck.proof import ProofBundle, DisclosedTurn
+    from claudedeck.proof import ProofBundle, DisclosedTurn, AnchorRef
 
     disclosed = []
     for seq in seqs:
@@ -543,9 +543,33 @@ def cmd_proof(args):
             artifacts=entry.get("artifacts", {}),
         ))
 
+    # Auto-include anchors from the anchor log
+    anchors = []
+    if not getattr(args, "no_anchors", False):
+        from claudedeck.anchoring import read_log_entries
+        import base64
+
+        anchor_entries = read_log_entries(deck_dir, chain.head_hash)
+        for ae in anchor_entries:
+            proof_data = None
+            # Embed OTS proof file if present
+            extra = ae.get("extra", {})
+            ots_path = extra.get("ots_proof_path")
+            if ots_path and Path(ots_path).exists():
+                proof_data = base64.b64encode(Path(ots_path).read_bytes()).decode("ascii")
+
+            anchors.append(AnchorRef(
+                anchor_type=ae.get("anchor_type", "local"),
+                chain_head_hash=ae["chain_head_hash"],
+                reference=ae.get("reference", ""),
+                timestamp=ae.get("timestamp"),
+                proof_data=proof_data,
+            ))
+
     bundle = ProofBundle(
         chain_records=[rec.to_dict() for rec in chain.records],
         disclosed_turns=disclosed,
+        anchors=anchors,
     )
 
     output = Path(args.output) if args.output else deck_dir / f"{sid}.proof.json"
@@ -556,11 +580,14 @@ def cmd_proof(args):
     redacted = [r.seq for r in chain.records if r.seq not in seqs]
     if redacted:
         print(f"  redacted turns:  {redacted}")
+    if anchors:
+        types = [a.anchor_type for a in anchors]
+        print(f"  anchors:         {types}")
     print(f"  verify with: python verify_proof.py {output} --verbose")
 
 
 def cmd_anchor(args):
-    """Anchor a session's chain head with the local signing backend."""
+    """Anchor a session's chain head."""
     try:
         root = find_project_root()
     except FileNotFoundError:
@@ -584,24 +611,41 @@ def cmd_anchor(args):
         print("Chain is empty, nothing to anchor.")
         sys.exit(1)
 
-    from claudedeck.local_anchor import sign_local
+    from claudedeck.anchoring import anchor, anchor_all, BACKENDS
 
-    result = sign_local(chain.head_hash, deck_dir)
-    if result.success:
-        print(f"Chain head anchored locally.")
-        print(f"  session:   {sid}")
-        print(f"  head:      {format_hash(chain.head_hash, 24)}")
-        print(f"  signature: {format_hash(result.signature, 24)}")
-        print(f"  key_id:    {format_hash(result.key_id, 24)}")
-        print(f"  timestamp: {result.timestamp}")
-        print(f"  log_index: {result.log_index}")
+    backend = getattr(args, "backend", "local")
+
+    if backend == "all":
+        results = anchor_all(chain.head_hash, list(BACKENDS), deck_dir)
     else:
-        print(f"Anchor failed: {result.error}")
+        results = [anchor(chain.head_hash, backend, deck_dir)]
+
+    any_success = False
+    for result in results:
+        if result.success:
+            any_success = True
+            print(f"[{result.anchor_type}] Chain head anchored.")
+            print(f"  session:   {sid}")
+            print(f"  head:      {format_hash(chain.head_hash, 24)}")
+            print(f"  reference: {result.reference}")
+            print(f"  timestamp: {result.timestamp}")
+            if result.extra.get("rekor_url"):
+                print(f"  rekor:     {result.extra['rekor_url']}")
+            if result.extra.get("ots_proof_path"):
+                print(f"  ots proof: {result.extra['ots_proof_path']}")
+            if result.extra.get("signature"):
+                print(f"  signature: {format_hash(result.extra['signature'], 24)}")
+            if result.extra.get("key_id"):
+                print(f"  key_id:    {format_hash(result.extra['key_id'], 24)}")
+        else:
+            print(f"[{result.anchor_type}] Failed: {result.error}")
+
+    if not any_success:
         sys.exit(1)
 
 
 def cmd_anchor_verify(args):
-    """Verify a local anchor for a session."""
+    """Verify anchors for a session."""
     try:
         root = find_project_root()
     except FileNotFoundError:
@@ -622,30 +666,28 @@ def cmd_anchor_verify(args):
 
     chain = Chain.load(chain_path)
 
-    from claudedeck.local_anchor import verify_from_log, _log_path
+    from claudedeck.anchoring import read_log_entries, verify_anchor
 
-    log = _log_path(deck_dir)
-    if not log.exists():
-        print("No anchor log found. Run 'claudedeck anchor' first.")
-        sys.exit(1)
+    entries = read_log_entries(deck_dir, chain.head_hash)
 
-    # Find anchors for this chain head in the log
-    found = False
-    with open(log) as f:
-        for line in f:
-            entry = json.loads(line.strip())
-            if entry["chain_head_hash"] == chain.head_hash:
-                found = True
-                ok, detail = verify_from_log(
-                    chain.head_hash, entry["index"], deck_dir,
-                )
-                status = "PASS" if ok else "FAIL"
-                print(f"  [{status}] log_index={entry['index']}  {detail}")
-
-    if not found:
+    if not entries:
         print(f"No anchors found for chain head {format_hash(chain.head_hash, 24)}")
         print("Run 'claudedeck anchor' to create one.")
         sys.exit(1)
+
+    # Filter by backend if specified
+    backend = getattr(args, "backend", None)
+    if backend:
+        entries = [e for e in entries if e.get("anchor_type") == backend]
+        if not entries:
+            print(f"No {backend} anchors found for this chain head.")
+            sys.exit(1)
+
+    for entry in entries:
+        anchor_type = entry.get("anchor_type", "local")
+        ok, detail = verify_anchor(entry, deck_dir)
+        status = "PASS" if ok else "FAIL"
+        print(f"  [{status}] [{anchor_type}] index={entry['index']}  {detail}")
 
 
 def cmd_session(args):
@@ -782,14 +824,19 @@ def main():
     p_proof.add_argument("session", nargs="?", help="Session ID (default: most recent)")
     p_proof.add_argument("--seqs", metavar="0,1,2", help="Turns to disclose (default: all)")
     p_proof.add_argument("--output", "-o", help="Output file path")
+    p_proof.add_argument("--no-anchors", action="store_true", help="Exclude anchors from bundle")
 
     # anchor
-    p_anchor = sub.add_parser("anchor", help="Anchor chain head with local signing key")
+    p_anchor = sub.add_parser("anchor", help="Anchor chain head")
     p_anchor.add_argument("session", nargs="?", help="Session ID (default: most recent)")
+    p_anchor.add_argument("--backend", "-b", choices=["local", "sigstore", "ots", "all"], default="local",
+                          help="Anchor backend (default: local)")
 
     # anchor-verify
-    p_anchor_v = sub.add_parser("anchor-verify", help="Verify local anchor for a session")
+    p_anchor_v = sub.add_parser("anchor-verify", help="Verify anchors for a session")
     p_anchor_v.add_argument("session", nargs="?", help="Session ID (default: most recent)")
+    p_anchor_v.add_argument("--backend", "-b", choices=["local", "sigstore", "ots"], default=None,
+                            help="Filter by backend type (default: all)")
 
     # session (legacy REPL)
     p_session = sub.add_parser("session", help="Interactive REPL session (legacy)")

@@ -55,22 +55,32 @@ class DisclosedTurn:
 @dataclass
 class AnchorRef:
     """Reference to an external timestamp anchor."""
-    anchor_type: str  # "sigstore", "opentimestamps", "rfc3161"
+    anchor_type: str  # "local", "sigstore", "ots"
     chain_head_hash: str
     reference: str  # Rekor log index, OTS proof path, etc.
     timestamp: Optional[str] = None
+    proof_data: Optional[str] = None  # base64-encoded proof (for OTS)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "anchor_type": self.anchor_type,
             "chain_head_hash": self.chain_head_hash,
             "reference": self.reference,
             "timestamp": self.timestamp,
         }
+        if self.proof_data is not None:
+            d["proof_data"] = self.proof_data
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "AnchorRef":
-        return cls(**d)
+        return cls(
+            anchor_type=d["anchor_type"],
+            chain_head_hash=d["chain_head_hash"],
+            reference=d["reference"],
+            timestamp=d.get("timestamp"),
+            proof_data=d.get("proof_data"),
+        )
 
 
 @dataclass

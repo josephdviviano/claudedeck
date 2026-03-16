@@ -181,17 +181,34 @@ def main():
         print(f"  [INFO] No external anchors. Chain is self-consistent but unanchored.")
     else:
         head_hash = records[-1]["record_hash"] if records else ""
-        for anchor in anchors:
-            hash_ok = anchor["chain_head_hash"] == head_hash
+        for a in anchors:
+            hash_ok = a["chain_head_hash"] == head_hash
             status = "PASS" if hash_ok else "FAIL"
-            print(f"  [{status}] {anchor['anchor_type']}: references chain head")
+            atype = a["anchor_type"]
+            print(f"  [{status}] {atype}: references chain head")
             if verbose:
-                print(f"         Ref: {anchor['reference']}")
+                print(f"         Ref: {a.get('reference', '')}")
             if not hash_ok:
                 print(f"         WARNING: Anchor hash doesn't match chain head")
-        print(f"  [NOTE] Verify anchors externally:")
-        print(f"         Sigstore: rekor-cli get --log-index <index>")
-        print(f"         OTS:     ots verify <proof.ots>")
+
+            # Backend-specific verification instructions
+            if atype == "sigstore":
+                ref = a.get("reference", "")
+                idx = ref.split(":")[-1] if ":" in ref else ref
+                print(f"         Verify: cosign verify-blob --rekor-url https://rekor.sigstore.dev --log-index {idx}")
+                print(f"         Or:     rekor-cli get --log-index {idx}")
+            elif atype == "ots":
+                ref = a.get("reference", "")
+                path = ref.split(":", 1)[-1] if ":" in ref else ref
+                if a.get("proof_data"):
+                    print(f"         OTS proof embedded (base64). To verify:")
+                    print(f"           echo '<proof_data>' | base64 -d > proof.ots")
+                    print(f"           ots verify proof.ots")
+                else:
+                    print(f"         Verify: ots verify {path}")
+            elif atype == "local":
+                print(f"         Local anchor — no third-party attestation.")
+                print(f"         Proves signer held the key at signing time.")
 
     # 4. Optional: check local artifact
     if artifact_check:

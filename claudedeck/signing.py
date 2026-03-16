@@ -57,6 +57,43 @@ class SigstoreResult:
     error: Optional[str] = None
 
 
+def verify_with_sigstore(chain_head_hash: str, rekor_log_index: str) -> SigstoreResult:
+    """Verify a Sigstore anchor by checking the Rekor transparency log.
+
+    Args:
+        chain_head_hash: SHA-256 hex digest that was signed.
+        rekor_log_index: The Rekor log index from the original signing.
+
+    Requires: cosign CLI installed.
+    """
+    safe_hash = validate_hash_only(chain_head_hash)
+
+    if not shutil.which("cosign"):
+        return SigstoreResult(success=False, error="cosign not found in PATH")
+
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sha256", delete=False) as f:
+        f.write(safe_hash)
+        tmp_path = f.name
+
+    try:
+        cmd = [
+            "cosign", "verify-blob", tmp_path,
+            "--rekor-url", "https://rekor.sigstore.dev",
+            "--log-index", str(rekor_log_index),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            return SigstoreResult(
+                success=True,
+                rekor_log_index=str(rekor_log_index),
+            )
+        else:
+            return SigstoreResult(success=False, error=result.stderr[:500])
+    finally:
+        os.unlink(tmp_path)
+
+
 def sign_with_sigstore(chain_head_hash: str, identity_token: str | None = None) -> SigstoreResult:
     """Sign a chain head hash using Sigstore cosign.
 
@@ -145,6 +182,41 @@ def stamp_with_ots(chain_head_hash: str, output_dir: str = ".") -> OTSResult:
         proof_path = hash_file + ".ots"
         if result.returncode == 0 and os.path.exists(proof_path):
             return OTSResult(success=True, proof_path=proof_path)
+        else:
+            return OTSResult(success=False, error=result.stderr[:500])
+    except Exception as e:
+        return OTSResult(success=False, error=str(e))
+
+
+def verify_with_ots(chain_head_hash: str, ots_proof_path: str) -> OTSResult:
+    """Verify an OpenTimestamps proof.
+
+    Args:
+        chain_head_hash: SHA-256 hex digest that was timestamped.
+        ots_proof_path: Path to the .ots proof file.
+
+    Requires: ots CLI installed (pip install opentimestamps-client).
+    """
+    safe_hash = validate_hash_only(chain_head_hash)
+
+    if not shutil.which("ots"):
+        return OTSResult(success=False, error="ots not found in PATH")
+
+    import os
+    # The .ots file corresponds to a .sha256 file containing the hash
+    hash_file = ots_proof_path.replace(".ots", "")
+    if not os.path.exists(hash_file):
+        # Recreate the hash file so ots verify can check it
+        with open(hash_file, "w") as f:
+            f.write(safe_hash)
+
+    try:
+        result = subprocess.run(
+            ["ots", "verify", ots_proof_path],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0:
+            return OTSResult(success=True, proof_path=ots_proof_path)
         else:
             return OTSResult(success=False, error=result.stderr[:500])
     except Exception as e:

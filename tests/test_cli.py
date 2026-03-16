@@ -160,3 +160,140 @@ class TestCLIStatus:
         assert "ENABLED" in output
         assert "sess-001" in output
         assert "VALID" in output
+
+
+class TestCLIAnchor:
+    def _make_chain(self, tmp_path):
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        deck_dir = tmp_path / ".claudedeck"
+        deck_dir.mkdir(exist_ok=True)
+        chain = Chain()
+        chain.append_turn(prompt="hello", response="world")
+        chain.save(deck_dir / "test-session.chain.jsonl")
+        return deck_dir, chain
+
+    def test_anchor_local(self, tmp_path, capsys):
+        self._make_chain(tmp_path)
+        from claudedeck.__main__ import cmd_anchor
+        args = type("Args", (), {"session": "test-session", "backend": "local"})()
+        with patch("claudedeck.__main__.find_project_root", return_value=tmp_path):
+            cmd_anchor(args)
+        output = capsys.readouterr().out
+        assert "[local]" in output
+        assert "anchored" in output.lower()
+
+    def test_anchor_sigstore_not_installed(self, tmp_path, capsys):
+        self._make_chain(tmp_path)
+        from claudedeck.__main__ import cmd_anchor
+        args = type("Args", (), {"session": "test-session", "backend": "sigstore"})()
+        with patch("claudedeck.__main__.find_project_root", return_value=tmp_path):
+            with patch("claudedeck.signing.shutil.which", return_value=None):
+                with pytest.raises(SystemExit):
+                    cmd_anchor(args)
+        output = capsys.readouterr().out
+        assert "cosign not found" in output
+
+    def test_anchor_all_partial(self, tmp_path, capsys):
+        self._make_chain(tmp_path)
+        from claudedeck.__main__ import cmd_anchor
+        args = type("Args", (), {"session": "test-session", "backend": "all"})()
+        with patch("claudedeck.__main__.find_project_root", return_value=tmp_path):
+            with patch("claudedeck.signing.shutil.which", return_value=None):
+                cmd_anchor(args)  # local succeeds, others fail
+        output = capsys.readouterr().out
+        assert "[local]" in output
+        assert "Failed" in output
+
+
+class TestCLIAnchorVerify:
+    def test_verify_local_anchor(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        deck_dir = tmp_path / ".claudedeck"
+        deck_dir.mkdir()
+        chain = Chain()
+        chain.append_turn(prompt="hello", response="world")
+        chain.save(deck_dir / "test-session.chain.jsonl")
+
+        from claudedeck.anchoring import anchor
+        anchor(chain.head_hash, "local", deck_dir)
+
+        from claudedeck.__main__ import cmd_anchor_verify
+        args = type("Args", (), {"session": "test-session", "backend": None})()
+        with patch("claudedeck.__main__.find_project_root", return_value=tmp_path):
+            cmd_anchor_verify(args)
+        output = capsys.readouterr().out
+        assert "[PASS]" in output
+
+    def test_verify_filter_by_backend(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        deck_dir = tmp_path / ".claudedeck"
+        deck_dir.mkdir()
+        chain = Chain()
+        chain.append_turn(prompt="hello", response="world")
+        chain.save(deck_dir / "test-session.chain.jsonl")
+
+        from claudedeck.anchoring import anchor
+        anchor(chain.head_hash, "local", deck_dir)
+
+        from claudedeck.__main__ import cmd_anchor_verify
+        args = type("Args", (), {"session": "test-session", "backend": "sigstore"})()
+        with patch("claudedeck.__main__.find_project_root", return_value=tmp_path):
+            with pytest.raises(SystemExit):
+                cmd_anchor_verify(args)
+
+
+class TestCLIProofWithAnchors:
+    def test_proof_auto_includes_anchors(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        deck_dir = tmp_path / ".claudedeck"
+        deck_dir.mkdir()
+        chain = Chain()
+        chain.append_turn(prompt="hello", response="world")
+        chain.save(deck_dir / "test-session.chain.jsonl")
+        vault = {"0": {"prompt": "hello", "response": "world"}}
+        with open(deck_dir / "test-session.vault.json", "w") as f:
+            json.dump(vault, f)
+
+        from claudedeck.anchoring import anchor
+        anchor(chain.head_hash, "local", deck_dir)
+
+        from claudedeck.__main__ import cmd_proof
+        output_path = tmp_path / "out.proof.json"
+        args = type("Args", (), {
+            "session": "test-session", "seqs": None,
+            "output": str(output_path), "no_anchors": False,
+        })()
+        with patch("claudedeck.__main__.find_project_root", return_value=tmp_path):
+            cmd_proof(args)
+
+        with open(output_path) as f:
+            bundle = json.load(f)
+        assert len(bundle["anchors"]) == 1
+        assert bundle["anchors"][0]["anchor_type"] == "local"
+
+    def test_proof_no_anchors_flag(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        deck_dir = tmp_path / ".claudedeck"
+        deck_dir.mkdir()
+        chain = Chain()
+        chain.append_turn(prompt="hello", response="world")
+        chain.save(deck_dir / "test-session.chain.jsonl")
+        vault = {"0": {"prompt": "hello", "response": "world"}}
+        with open(deck_dir / "test-session.vault.json", "w") as f:
+            json.dump(vault, f)
+
+        from claudedeck.anchoring import anchor
+        anchor(chain.head_hash, "local", deck_dir)
+
+        from claudedeck.__main__ import cmd_proof
+        output_path = tmp_path / "out.proof.json"
+        args = type("Args", (), {
+            "session": "test-session", "seqs": None,
+            "output": str(output_path), "no_anchors": True,
+        })()
+        with patch("claudedeck.__main__.find_project_root", return_value=tmp_path):
+            cmd_proof(args)
+
+        with open(output_path) as f:
+            bundle = json.load(f)
+        assert len(bundle["anchors"]) == 0
