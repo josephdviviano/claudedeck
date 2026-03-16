@@ -2,13 +2,103 @@
 
 Cryptographic provenance for AI coding sessions. Prove that a specific interaction with an AI model produced a specific result — with no omissions, no insertions, and no modifications.
 
+Named after the Ono-Sendai cyberspace deck from Neuromancer — the trust interface between human and digital space.
+
+## Quick Start
+
+### Install
+
+```bash
+pip install -e .                   # core (stdlib only)
+pip install -e ".[vault]"          # + encrypted vault (requires cryptography)
+pip install -e ".[dev]"            # + test dependencies
+```
+
+### Enable verification
+
+```bash
+cd your-project/
+claudedeck on                      # installs a Claude Code Stop hook
+```
+
+That's it. Run `claude` normally — every prompt/response turn is automatically hashed and chained in the background. You keep the full CLI experience (streaming, tool use, everything).
+
+### Inspect what's been recorded
+
+```bash
+claudedeck status                  # overview of all sessions
+claudedeck show                    # read the conversation back
+claudedeck show --seq 22           # jump to a specific exchange
+claudedeck inspect                 # detailed chain record view
+```
+
+### Verify chain integrity
+
+```bash
+claudedeck verify                  # verify the hash chain
+```
+
+### Anchor the chain head
+
+Anchoring binds the chain head hash to an external timestamp service, proving the chain existed at a specific time.
+
+```bash
+# Local anchor (always works, no external tools needed)
+claudedeck anchor
+
+# Sigstore — signs via OIDC, records in Rekor transparency log
+# Requires: https://docs.sigstore.dev/cosign/installation/
+claudedeck anchor --backend sigstore
+
+# OpenTimestamps — Bitcoin-attested timestamps
+# Requires: pip install opentimestamps-client
+claudedeck anchor --backend ots
+
+# All backends at once (local always succeeds; others fail gracefully)
+claudedeck anchor --backend all
+```
+
+### Verify anchors
+
+```bash
+claudedeck anchor-verify           # verify all anchors for the session
+claudedeck anchor-verify -b sigstore  # verify only sigstore anchors
+```
+
+### Generate a proof bundle
+
+Proof bundles are self-contained packages for auditors. They include the full chain (hashes only) plus selectively disclosed plaintext for chosen turns.
+
+```bash
+claudedeck proof                   # disclose all turns
+claudedeck proof --seqs 0,2,5      # selective disclosure
+claudedeck proof --no-anchors      # exclude anchor references
+```
+
+Anchors from the anchor log are auto-included in proof bundles.
+
+### Verify a proof bundle (zero dependencies)
+
+Anyone can verify a proof bundle with just Python — no need to install claudedeck:
+
+```bash
+python verify_proof.py bundle.proof.json --verbose
+python verify_proof.py bundle.proof.json --check-artifact script.py
+```
+
+### Disable verification
+
+```bash
+claudedeck off                     # removes the hook; chain data is preserved
+```
+
 ## The Problem
 
 A researcher uses Claude Code to develop an analysis pipeline. They publish the results. A reviewer asks: "How do I know you didn't cherry-pick prompts, edit responses, or add steps after the fact?"
 
-## The Solution
+## How It Works
 
-`claudedeck` creates a **hash chain** over each prompt/response turn, binding artifacts (scripts, files, outputs) to specific moments in the conversation. The chain is anchored to external timestamp services (Sigstore + OpenTimestamps) for independent verifiability.
+claudedeck runs as a **Claude Code Stop hook** — it fires silently after each assistant response, reading the session transcript and appending to an append-only hash chain. No wrapper, no proxy, no modified CLI.
 
 ### Architecture
 
@@ -19,8 +109,8 @@ A researcher uses Claude Code to develop an analysis pipeline. They publish the 
 │  Claude Code ──→ Chain Builder ──→ session.chain.jsonl│
 │       │              │                (hashes only)  │
 │       │              ▼                               │
-│       │         Vault (encrypted)                    │
-│       │         session.vault                        │
+│       │         Vault (plaintext)                     │
+│       │         session.vault.json                    │
 │       │              │                               │
 │       ▼              ▼                               │
 │   Artifacts    Proof Bundle                          │
@@ -32,27 +122,27 @@ A researcher uses Claude Code to develop an analysis pipeline. They publish the 
 │  └────────────────┬───────────────────────┘         │
 └───────────────────┼─────────────────────────────────┘
                     │
-          ┌─────────┴─────────┐
-          ▼                   ▼
-   ┌─────────────┐    ┌──────────────┐
-   │  Sigstore   │    │ OpenTimestamps│
-   │  (Rekor)    │    │  (Bitcoin)    │
-   │             │    │              │
-   │ Immediate   │    │ Permanent    │
-   │ + Identity  │    │ + Trustless  │
-   └─────────────┘    └──────────────┘
+          ┌─────────┼─────────┐
+          ▼         ▼         ▼
+   ┌──────────┐ ┌────────┐ ┌──────────────┐
+   │  Local   │ │Sigstore│ │ OpenTimestamps│
+   │  HMAC    │ │(Rekor) │ │  (Bitcoin)    │
+   │          │ │        │ │              │
+   │ Dev/test │ │Identity│ │ Permanent    │
+   │ + fast   │ │+ audit │ │ + trustless  │
+   └──────────┘ └────────┘ └──────────────┘
 ```
 
 ### What goes where
 
 | Data | Where it lives | Who sees it |
 |------|---------------|-------------|
-| Prompts & responses (plaintext) | Encrypted vault (local) | Only the researcher |
+| Prompts & responses (plaintext) | Vault file (local) | Only the researcher |
 | Hashes of prompts/responses | Chain file (publishable) | Anyone |
 | Artifact file hashes | Chain file (publishable) | Anyone |
 | Random nonce per record | Chain file | Anyone (prevents brute-force) |
-| Chain head hash | Sigstore + OTS | Anyone |
-| OIDC identity (if keyless signing) | Sigstore Rekor log | Anyone |
+| Chain head hash | Anchor services | Anyone |
+| OIDC identity (if Sigstore) | Sigstore Rekor log | Anyone |
 
 ### Security properties
 
@@ -60,99 +150,49 @@ A researcher uses Claude Code to develop an analysis pipeline. They publish the 
 |--------|-----------|
 | Tamper with a response | Chain hash breaks — detected by any verifier |
 | Insert/remove a turn | Chain linkage breaks — detected by any verifier |
-| Forge timestamps | Would require compromising both Sigstore AND Bitcoin |
+| Forge timestamps | Would require compromising Sigstore AND/OR Bitcoin |
 | Brute-force prompt from hash | Random nonce makes this computationally infeasible |
 | Accidental content leakage to signing services | Signing airlock structurally accepts only 64-char hex |
-| Vault compromised on disk | AES encryption via passphrase (PBKDF2, 600k iterations) |
 
 ### What this does NOT prove (yet)
 
 - **That Claude actually generated the responses.** This would require Anthropic to co-sign responses server-side. The chain logs API request IDs as correlation evidence, but these aren't cryptographic attestations.
 
-## Quick Start
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `claudedeck on` | Enable verification (installs Stop hook) |
+| `claudedeck off` | Disable verification (preserves chain data) |
+| `claudedeck status` | Show verification status and session info |
+| `claudedeck verify [SESSION]` | Verify chain integrity |
+| `claudedeck inspect [SESSION]` | Inspect chain records in detail |
+| `claudedeck show [SESSION]` | Show full conversation in readable format |
+| `claudedeck proof [SESSION]` | Generate a proof bundle |
+| `claudedeck anchor [SESSION]` | Anchor chain head to external service |
+| `claudedeck anchor-verify [SESSION]` | Verify anchor signatures |
+
+### Anchor backends
+
+| Backend | Flag | Requires | What it proves |
+|---------|------|----------|---------------|
+| Local HMAC | `--backend local` (default) | Nothing | Signer held key at signing time |
+| Sigstore | `--backend sigstore` | `cosign` CLI | Identity + timestamp in public log |
+| OpenTimestamps | `--backend ots` | `ots` CLI | Bitcoin-attested timestamp |
+| All | `--backend all` | Optional | Best available attestation |
+
+## Development
 
 ```bash
-pip install cryptography
+# Install in development mode
+pip install -e ".[dev]"
 
-# Run the demo
+# Run tests (185 tests)
+pytest
+
+# Run the legacy demo
 python demo.py
-
-# Verify a proof bundle (zero dependencies)
-python verify_proof.py proof_bundle.json --verbose
 ```
-
-## Usage
-
-### Recording a session
-
-```python
-from claudedeck import Chain
-from claudedeck.vault import Vault
-
-chain = Chain()
-vault = Vault("session.vault", passphrase="your-passphrase")
-
-# After each Claude Code turn:
-record = chain.append_turn(
-    prompt="Write a function to compute GC content",
-    response="Here's a function that computes GC content from a DNA sequence...",
-    artifact_paths=["gc_content.py"],
-    model="claude-sonnet-4-20250514",
-    api_request_id="req_01ABC123",  # from API response headers
-)
-
-vault.store(record.seq, prompt=..., response=..., artifacts={"gc_content.py": ...})
-vault.save()
-chain.save("session.chain.jsonl")
-```
-
-### Creating a proof bundle
-
-```python
-from claudedeck.proof import create_proof_bundle, AnchorRef
-
-bundle = create_proof_bundle(
-    chain=chain,
-    vault=vault,
-    disclose_seqs=[0, 2, 5],  # choose which turns to reveal
-    metadata={
-        "researcher": "Your Name",
-        "orcid": "0000-0002-XXXX-XXXX",
-        "purpose": "Supplementary material for [paper title]",
-    },
-)
-bundle.save("proof_bundle.json")
-```
-
-### Anchoring to external services
-
-```python
-from claudedeck.signing import anchor_chain_head
-
-results = anchor_chain_head(chain.head_hash)
-# results["sigstore"].rekor_log_index → "12345678"
-# results["ots"].proof_path → "session_head.sha256.ots"
-```
-
-### Verifying (as an auditor)
-
-```bash
-# Zero dependencies — just Python stdlib
-python verify_proof.py proof_bundle.json --verbose
-
-# Check a specific artifact file
-python verify_proof.py proof_bundle.json --check-artifact gc_content.py
-```
-
-## Roadmap
-
-- [ ] Real-time Claude Code wrapper (pty-based session capture)
-- [ ] `claudedeck record` CLI command
-- [ ] `claudedeck seal` — finalize + anchor a session
-- [ ] `claudedeck prove` — interactive proof bundle builder
-- [ ] Merkle tree for efficient partial verification of long sessions
-- [ ] Integration with Anthropic's API response headers
-- [ ] Server-side co-signing (pending Anthropic support)
 
 ## License
 
