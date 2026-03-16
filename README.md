@@ -183,6 +183,17 @@ claudedeck runs as a **Claude Code Stop hook** — it fires silently after each 
 
 ## Roadmap
 
+- [x] Claude Code Stop hook integration (automatic, silent chaining)
+- [x] CLI: on/off/status/verify/inspect/show/proof
+- [x] Selective disclosure in proof bundles
+- [x] Local HMAC anchor backend for dev/testing
+- [x] Sigstore (cosign) anchoring
+- [x] OpenTimestamps (Bitcoin) anchoring
+- [x] Unified anchor orchestrator with `--backend` flag
+- [x] Proof bundles auto-include anchors
+- [x] Conversation viewer with tool-use collapsing (`show`)
+- [x] Standalone zero-dependency verifier (`verify_proof.py`)
+- [x] Comprehensive test suite (185 tests)
 - [ ] C2PA-compatible manifest output (interop with Adobe/Google/Microsoft content provenance ecosystem)
 - [ ] Merkle tree for efficient partial verification of long sessions
 - [ ] Integration with Anthropic's API response headers (api_request_id correlation)
