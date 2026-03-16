@@ -17,11 +17,6 @@ import sys
 import os
 from pathlib import Path
 
-# Add project root to path so we can import claudedeck
-_project_root = Path(__file__).resolve().parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
 from claudedeck.core import Chain
 
 

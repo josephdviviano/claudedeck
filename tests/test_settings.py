@@ -128,4 +128,4 @@ class TestHookRemoval:
     def test_get_hook_command_format(self):
         cmd = get_hook_command()
         assert "python" in cmd.lower() or "Python" in cmd
-        assert "hook.py" in cmd
+        assert "claudedeck.hook" in cmd

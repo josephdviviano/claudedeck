@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-HOOK_MARKER = "claudedeck/hook.py"
+HOOK_MARKER = "claudedeck.hook"
 
 
 def find_project_root(start: Path | None = None) -> Path:
@@ -43,10 +43,13 @@ def write_settings(path: Path, data: dict):
 
 
 def get_hook_command() -> str:
-    """Build the absolute command string for the Stop hook."""
+    """Build the command string for the Stop hook.
+
+    Uses `sys.executable -m claudedeck.hook` so it works whether
+    claudedeck was pip-installed, editable-installed, or run from source.
+    """
     python = sys.executable
-    hook_script = (Path(__file__).parent / "hook.py").resolve()
-    return f"{python} {hook_script}"
+    return f"{python} -m claudedeck.hook"
 
 
 def is_hook_installed(settings: dict) -> bool:

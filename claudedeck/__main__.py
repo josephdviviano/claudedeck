@@ -358,6 +358,95 @@ def cmd_proof(args):
     print(f"  verify with: python verify_proof.py {output} --verbose")
 
 
+def cmd_anchor(args):
+    """Anchor a session's chain head with the local signing backend."""
+    try:
+        root = find_project_root()
+    except FileNotFoundError:
+        print("Error: not in a project directory")
+        sys.exit(1)
+
+    deck_dir = get_deck_dir(root)
+    sid = resolve_session(args, deck_dir)
+
+    if sid is None:
+        print("No sessions found in .claudedeck/")
+        sys.exit(1)
+
+    chain_path = deck_dir / f"{sid}.chain.jsonl"
+    if not chain_path.exists():
+        print(f"Chain file not found: {chain_path}")
+        sys.exit(1)
+
+    chain = Chain.load(chain_path)
+    if not chain.records:
+        print("Chain is empty, nothing to anchor.")
+        sys.exit(1)
+
+    from claudedeck.local_anchor import sign_local
+
+    result = sign_local(chain.head_hash, deck_dir)
+    if result.success:
+        print(f"Chain head anchored locally.")
+        print(f"  session:   {sid}")
+        print(f"  head:      {format_hash(chain.head_hash, 24)}")
+        print(f"  signature: {format_hash(result.signature, 24)}")
+        print(f"  key_id:    {format_hash(result.key_id, 24)}")
+        print(f"  timestamp: {result.timestamp}")
+        print(f"  log_index: {result.log_index}")
+    else:
+        print(f"Anchor failed: {result.error}")
+        sys.exit(1)
+
+
+def cmd_anchor_verify(args):
+    """Verify a local anchor for a session."""
+    try:
+        root = find_project_root()
+    except FileNotFoundError:
+        print("Error: not in a project directory")
+        sys.exit(1)
+
+    deck_dir = get_deck_dir(root)
+    sid = resolve_session(args, deck_dir)
+
+    if sid is None:
+        print("No sessions found in .claudedeck/")
+        sys.exit(1)
+
+    chain_path = deck_dir / f"{sid}.chain.jsonl"
+    if not chain_path.exists():
+        print(f"Chain file not found: {chain_path}")
+        sys.exit(1)
+
+    chain = Chain.load(chain_path)
+
+    from claudedeck.local_anchor import verify_from_log, _log_path
+
+    log = _log_path(deck_dir)
+    if not log.exists():
+        print("No anchor log found. Run 'claudedeck anchor' first.")
+        sys.exit(1)
+
+    # Find anchors for this chain head in the log
+    found = False
+    with open(log) as f:
+        for line in f:
+            entry = json.loads(line.strip())
+            if entry["chain_head_hash"] == chain.head_hash:
+                found = True
+                ok, detail = verify_from_log(
+                    chain.head_hash, entry["index"], deck_dir,
+                )
+                status = "PASS" if ok else "FAIL"
+                print(f"  [{status}] log_index={entry['index']}  {detail}")
+
+    if not found:
+        print(f"No anchors found for chain head {format_hash(chain.head_hash, 24)}")
+        print("Run 'claudedeck anchor' to create one.")
+        sys.exit(1)
+
+
 def cmd_session(args):
     """Run interactive REPL session (legacy mode)."""
     import subprocess
@@ -487,6 +576,14 @@ def main():
     p_proof.add_argument("--seqs", metavar="0,1,2", help="Turns to disclose (default: all)")
     p_proof.add_argument("--output", "-o", help="Output file path")
 
+    # anchor
+    p_anchor = sub.add_parser("anchor", help="Anchor chain head with local signing key")
+    p_anchor.add_argument("session", nargs="?", help="Session ID (default: most recent)")
+
+    # anchor-verify
+    p_anchor_v = sub.add_parser("anchor-verify", help="Verify local anchor for a session")
+    p_anchor_v.add_argument("session", nargs="?", help="Session ID (default: most recent)")
+
     # session (legacy REPL)
     p_session = sub.add_parser("session", help="Interactive REPL session (legacy)")
     p_session.add_argument("--model", "-m", default=None)
@@ -501,6 +598,8 @@ def main():
         "verify": cmd_verify,
         "inspect": cmd_inspect,
         "proof": cmd_proof,
+        "anchor": cmd_anchor,
+        "anchor-verify": cmd_anchor_verify,
         "session": cmd_session,
     }
 

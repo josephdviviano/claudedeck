@@ -3,3 +3,4 @@ __pycache__/
 .claudedeck/
 sessions/
 .claude/settings.local.json
+*.egg-info/
