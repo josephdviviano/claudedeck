@@ -289,6 +289,207 @@ def cmd_inspect(args):
         print()
 
 
+def cmd_show(args):
+    """Show the full conversation from a session."""
+    try:
+        root = find_project_root()
+    except FileNotFoundError:
+        print("Error: not in a project directory")
+        sys.exit(1)
+
+    deck_dir = get_deck_dir(root)
+    sid = resolve_session(args, deck_dir)
+
+    if sid is None:
+        print("No sessions found in .claudedeck/")
+        sys.exit(1)
+
+    chain_path = deck_dir / f"{sid}.chain.jsonl"
+    vault_path = deck_dir / f"{sid}.vault.json"
+
+    if not chain_path.exists():
+        print(f"Chain file not found: {chain_path}")
+        sys.exit(1)
+
+    chain = Chain.load(chain_path)
+
+    if not vault_path.exists():
+        print("Vault not found — only hashes available (use 'inspect' instead)")
+        sys.exit(1)
+
+    with open(vault_path) as f:
+        vault_data = json.load(f)
+
+    # Group records into logical exchanges.
+    # An "exchange" starts with a user prompt (non-empty prompt that isn't
+    # just a tool_result relay) and includes all subsequent tool-use steps
+    # until the next user prompt.
+    exchanges = _group_exchanges(chain.records, vault_data)
+
+    # Filter by seq range if requested
+    if args.seq is not None:
+        exchanges = [ex for ex in exchanges if ex["start_seq"] == args.seq]
+        if not exchanges:
+            print(f"No exchange starting at seq {args.seq}")
+            sys.exit(1)
+
+    # Header
+    valid, _ = chain.verify()
+    print(f"Session: {sid}")
+    print(f"Chain:   {len(chain.records)} records, {'VALID' if valid else 'INVALID'}")
+    print(f"Exchanges: {len(exchanges) if not args.seq else '(filtered)'}")
+    print()
+
+    for ex in exchanges:
+        _print_exchange(ex, verbose=args.verbose)
+
+
+def _group_exchanges(records, vault_data):
+    """Group chain records into logical exchanges.
+
+    An exchange is a user prompt followed by all the tool-use steps and
+    the final text response. This collapses the many intermediate
+    tool_use records into a single readable block.
+    """
+    exchanges = []
+    current = None
+
+    for rec in records:
+        entry = vault_data.get(str(rec.seq), {})
+        prompt = entry.get("prompt", "")
+        response = entry.get("response", "")
+        is_tool_use = response.startswith("[tool_use:")
+        has_real_prompt = bool(prompt.strip()) and not _is_tool_result_only(prompt)
+
+        if has_real_prompt:
+            # Start a new exchange
+            if current is not None:
+                exchanges.append(current)
+            current = {
+                "start_seq": rec.seq,
+                "prompt": prompt,
+                "tool_steps": [],
+                "final_response": None,
+                "artifacts": [],
+                "model": rec.turn.model,
+                "timestamp": rec.timestamp,
+                "records": [rec],
+            }
+            if is_tool_use:
+                current["tool_steps"].append(_parse_tool_names(response))
+            else:
+                current["final_response"] = response
+        elif current is not None:
+            # Continuation of current exchange
+            current["records"].append(rec)
+            if is_tool_use:
+                current["tool_steps"].append(_parse_tool_names(response))
+            else:
+                current["final_response"] = response
+            # Collect artifacts
+            for a in rec.turn.artifacts:
+                current["artifacts"].append(a)
+        else:
+            # Orphan record before first real prompt
+            if is_tool_use:
+                continue
+            # Standalone response (shouldn't happen much)
+            exchanges.append({
+                "start_seq": rec.seq,
+                "prompt": prompt,
+                "tool_steps": [],
+                "final_response": response,
+                "artifacts": [a for a in rec.turn.artifacts],
+                "model": rec.turn.model,
+                "timestamp": rec.timestamp,
+                "records": [rec],
+            })
+
+    if current is not None:
+        exchanges.append(current)
+
+    return exchanges
+
+
+def _is_tool_result_only(prompt: str) -> bool:
+    """Check if a prompt is just a tool_result relay (not a real user message)."""
+    stripped = prompt.strip()
+    return not stripped or stripped.startswith("<") or stripped.startswith("{")
+
+
+def _parse_tool_names(response: str) -> list[str]:
+    """Extract tool names from a response like '[tool_use: Read]\n[tool_use: Bash]'."""
+    import re
+    return re.findall(r'\[tool_use: (\w+)\]', response)
+
+
+def _print_exchange(ex, verbose=False):
+    """Print a single exchange in a readable chat format."""
+    seq_range = f"seq {ex['start_seq']}"
+    n_records = len(ex["records"])
+    if n_records > 1:
+        end_seq = ex["records"][-1].seq
+        seq_range = f"seq {ex['start_seq']}–{end_seq}"
+
+    # Header line
+    model = ex.get("model") or ""
+    model_tag = f" [{model}]" if model else ""
+    print(f"{'─' * 72}")
+    print(f"  {seq_range}{model_tag}  {ex['timestamp']}")
+    print(f"{'─' * 72}")
+
+    # Prompt
+    prompt = ex["prompt"]
+    if prompt.strip():
+        print()
+        # Clean up IDE context tags for readability
+        clean_prompt = _clean_prompt(prompt)
+        print(f"  YOU: {clean_prompt}")
+
+    # Tool steps (collapsed summary)
+    if ex["tool_steps"]:
+        all_tools = []
+        for step in ex["tool_steps"]:
+            all_tools.extend(step)
+        tool_counts = {}
+        for t in all_tools:
+            tool_counts[t] = tool_counts.get(t, 0) + 1
+        tool_summary = ", ".join(
+            f"{name} x{count}" if count > 1 else name
+            for name, count in tool_counts.items()
+        )
+        print(f"\n  TOOLS: {tool_summary}")
+
+    # Artifacts
+    if ex["artifacts"]:
+        for a in ex["artifacts"]:
+            print(f"\n  ARTIFACT: {a.filename} ({a.size_bytes} bytes)")
+            if verbose:
+                print(f"           sha256={a.sha256}")
+
+    # Final response
+    response = ex.get("final_response") or ""
+    if response.strip():
+        print()
+        # Indent response text
+        lines = response.split("\n")
+        for line in lines:
+            print(f"  CLAUDE: {line}" if line == lines[0] else f"          {line}")
+
+    print()
+
+
+def _clean_prompt(prompt: str) -> str:
+    """Strip IDE context tags for cleaner display."""
+    import re
+    # Remove <ide_opened_file>...</ide_opened_file> tags
+    cleaned = re.sub(r'<ide_opened_file>.*?</ide_opened_file>\s*', '', prompt, flags=re.DOTALL)
+    # Remove <system-reminder>...</system-reminder> tags
+    cleaned = re.sub(r'<system-reminder>.*?</system-reminder>\s*', '', cleaned, flags=re.DOTALL)
+    cleaned = cleaned.strip()
+    return cleaned if cleaned else "(context-only prompt)"
+
+
 def cmd_proof(args):
     """Generate a proof bundle from a session."""
     try:
@@ -570,6 +771,12 @@ def main():
     p_inspect = sub.add_parser("inspect", help="Inspect chain records in detail")
     p_inspect.add_argument("session", nargs="?", help="Session ID (default: most recent)")
 
+    # show
+    p_show = sub.add_parser("show", help="Show full conversation from a session")
+    p_show.add_argument("session", nargs="?", help="Session ID (default: most recent)")
+    p_show.add_argument("--seq", type=int, help="Show only the exchange starting at this seq")
+    p_show.add_argument("--verbose", "-v", action="store_true", help="Show full hashes and details")
+
     # proof
     p_proof = sub.add_parser("proof", help="Generate a proof bundle")
     p_proof.add_argument("session", nargs="?", help="Session ID (default: most recent)")
@@ -597,6 +804,7 @@ def main():
         "status": cmd_status,
         "verify": cmd_verify,
         "inspect": cmd_inspect,
+        "show": cmd_show,
         "proof": cmd_proof,
         "anchor": cmd_anchor,
         "anchor-verify": cmd_anchor_verify,
