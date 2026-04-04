@@ -41,6 +41,14 @@ class TestCLIOn:
         assert len(stop_groups) == 1
 
 
+    def test_on_refuses_home_directory(self, tmp_path):
+        """cmd_on should refuse to install into the user's home directory."""
+        from claudedeck.__main__ import cmd_on
+        with patch("claudedeck.__main__.find_project_root", return_value=Path.home()):
+            with pytest.raises(SystemExit):
+                cmd_on(None)
+
+
 class TestCLIOff:
     def test_off_removes_hook(self, tmp_path):
         (tmp_path / ".git").mkdir()

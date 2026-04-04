@@ -74,7 +74,14 @@ def cmd_on(args):
     try:
         root = find_project_root()
     except FileNotFoundError:
-        print("Error: not in a project directory (no .git/ or .claude/ found)")
+        print("Error: not in a project directory (no .git/ found)")
+        sys.exit(1)
+
+    # Refuse to install into the home directory — the hook would run
+    # globally on every Claude session and the snapshot would crawl ~.
+    if root == Path.home():
+        print("Error: refusing to install into your home directory.")
+        print("Run 'claudedeck on' from inside a project repository.")
         sys.exit(1)
 
     settings_path = get_settings_path(root)

@@ -14,13 +14,18 @@ HOOK_MARKER = "claudedeck.hook"
 
 
 def find_project_root(start: Path | None = None) -> Path:
-    """Walk up from start looking for .git/ or .claude/ directory."""
+    """Walk up from start looking for a project root directory.
+
+    Requires .git/ to be present. A bare .claude/ directory is not
+    sufficient — ~/.claude/ exists on every machine with Claude Code
+    installed and would incorrectly make ~ the project root.
+    """
     current = (start or Path.cwd()).resolve()
     for d in [current, *current.parents]:
-        if (d / ".git").exists() or (d / ".claude").exists():
+        if (d / ".git").exists():
             return d
     raise FileNotFoundError(
-        f"No project root found (no .git/ or .claude/) above {current}"
+        f"No project root found (no .git/) above {current}"
     )
 
 

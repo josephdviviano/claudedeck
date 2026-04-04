@@ -20,9 +20,13 @@ class TestFindProjectRoot:
         (tmp_path / ".git").mkdir()
         assert find_project_root(tmp_path) == tmp_path
 
-    def test_finds_claude_dir(self, tmp_path):
-        (tmp_path / ".claude").mkdir()
-        assert find_project_root(tmp_path) == tmp_path
+    def test_claude_dir_alone_not_sufficient(self, tmp_path):
+        """A bare .claude/ dir (like ~/.claude/) should NOT make a directory a project root."""
+        isolated = tmp_path / "fakehome"
+        isolated.mkdir()
+        (isolated / ".claude").mkdir()
+        with pytest.raises(FileNotFoundError):
+            find_project_root(isolated)
 
     def test_finds_parent(self, tmp_path):
         (tmp_path / ".git").mkdir()
